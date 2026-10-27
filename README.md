@@ -1,0 +1,202 @@
+<p align="center">
+  <img src="Resources/icon-1024.png" width="120" alt="cTerm icon">
+</p>
+
+<h1 align="center">cTerm</h1>
+<p align="center"><strong>原生 Swift 远程 SSH 工作台 · 毛玻璃界面 · 主机分组 · 多标签终端</strong></p>
+<p align="center">macOS 15+ · Swift 6 · AppKit · SwiftNIO SSH</p>
+
+![cTerm 主界面](Screenshots/main.png)
+
+## 简介
+
+cTerm 是一个用 Swift 从零构建的 macOS 远程 SSH 客户端。它直接使用
+[SwiftNIO SSH / Citadel](https://github.com/orlandos-nl/Citadel) 完成 SSH
+握手、认证、PTY 和交互式 Shell，不把 `/usr/bin/ssh` 当作连接层；界面和终端渲染
+全部由 AppKit + 自研 VT 解析器实现。
+
+界面采用无原生标题栏的全尺寸窗口：只保留红黄绿三个系统按钮，左侧是主机分组菜单，
+顶部是与其他控件保持一致的圆角标签。深色主题的标签区、终端和欢迎页共用一块
+`NSVisualEffectView` 毛玻璃表面；浅色主题使用纯白背景，标签、卡片和侧栏保持相同的
+圆角与层级。标签直接嵌入终端，没有额外的标题栏/分隔条。
+终端支持 256 色/真彩色、中文与 emoji 宽字符、输入法、滚动回看、选择复制、
+Bracketed Paste 和窗口缩放。
+
+## 功能
+
+- **主机管理**：名称、主机、端口、用户名、密码或私钥、备注。
+- **主机分组**：创建、重命名、删除分组；折叠/展开；把主机拖到分组或通过右键菜单
+  移动；编辑主机时直接选择分组；搜索可按主机或分组名过滤。
+- **一组多开**：同一台主机可以打开任意多个标签页；同名标签会自动编号，避免混淆。
+- **原生 SSH 传输**：基于 SwiftNIO SSH/Citadel，支持密码和 OpenSSH 私钥认证。
+- **密钥支持**：Ed25519 与 RSA 的 OpenSSH 私钥；加密私钥会在本机通过系统
+  `ssh-keygen` 解锁，解锁后的临时文件权限为 `0600` 并立即删除。
+- **主密码**：第一次保存主机、开启云同步或记住密码时创建主密码，之后每次启动输入一次（快速连接不保存任何凭据）。记住的密码/私钥口令、私钥副本、同步密码和 OneDrive 授权都保存在 `credentials.json` 中，用主密码加密（PBKDF2-SHA256 60 万轮 + AES-256-GCM）；主密码与同步密码相互独立。忘记主密码只能清除本机凭据，可通过云同步恢复。
+- **加密云同步**：主机配置、记住的密码/口令以及私钥文件内容，用同步密码在本机加密（PBKDF2-SHA256 + AES-256-GCM）后同步到 OneDrive 的应用文件夹（`应用/cTerm`），云端只有密文。私钥副本只保存在 cTerm 自己的凭据文件中，不会写入 `~/.ssh`。
+- **主机指纹校验**：首次连接采用 TOFU，显示 `SHA256:` 指纹；主机密钥变化时给出
+  高风险警告并要求显式确认。指纹保存在 `known_hosts.json`。
+- **多标签会话**：圆角标签；当前标签使用填充和细边框，hover 同样为圆角；关闭按钮与
+  右侧 `+` 的 hover 为圆形。标签区与终端共享同一背景，没有独立标签栏边界；
+  支持连接状态点、关闭/重连和标签页快捷键。
+- **终端模拟器**：UTF-8、CJK 宽字符、组合字符、256 色与真彩色、备用屏幕、滚动区域、
+  光标样式、括号粘贴、OSC 标题、窗口大小同步、8000 行回滚。
+- **编辑体验**：鼠标选择、双击选词、三击选行、复制/粘贴、拖入文件路径、输入法预编辑。
+- **外观**：深蓝 / 浅色两套主题，默认跟随 macOS 系统外观，可在设置或“主题”菜单中固定。浅色主题使用纯白背景，字体大小可调。
+- **深色毛玻璃**：深色主题的侧栏、标签区和终端/欢迎页使用系统 vibrancy 材质 +
+  蓝色半透明渐变、柔和反射和细边框；浅色主题按需求使用纯白背景，保持平滑干净的
+  表面，不使用颗粒/噪点纹理。
+- **自定义 chrome**：无标题栏，只保留系统交通灯；全尺寸内容、可拖拽的自定义顶栏；
+  侧栏可折叠，窗口大小会记住。
+
+## 截图
+
+| 欢迎页 | 新建主机 |
+| --- | --- |
+| ![欢迎页](Screenshots/welcome.png) | ![新建主机](Screenshots/editor.png) |
+
+| 身份验证 | 连接失败 |
+| --- | --- |
+| ![身份验证](Screenshots/password.png) | ![连接失败](Screenshots/overlay.png) |
+
+浅色主题（纯白背景，圆角标签与卡片）：
+
+![浅色主题](Screenshots/paper.png)
+
+## 系统要求
+
+- macOS 15.0 或更高版本（Citadel 的 PTY 客户端 API 需要 macOS 15）。
+- Xcode 16 / Swift 6 工具链（也支持匹配的 Command Line Tools）。
+- 首次构建需要网络访问以解析 Swift Package 依赖。
+
+## 构建与运行
+
+```bash
+# Release 构建 + 组装 dist/cTerm.app
+./build.sh
+
+# 启动
+open dist/cTerm.app
+```
+
+`build.sh` 会优先使用已安装的 Xcode 工具链，并把 SwiftPM/Clang 缓存放在
+`.build/caches`，避免沙箱和权限问题。
+
+开发调试：
+
+```bash
+swift build
+swift run cTerm
+
+# 终端核心单元测试（21 个用例）
+swift test
+```
+
+当前 `Package.swift` 的目标是 arm64 macOS；在 Apple Silicon 上构建最顺畅。
+若使用纯 Command Line Tools 且其 SDK 与编译器版本不匹配，请安装 Xcode，
+或者让 `DEVELOPER_DIR` 指向完整 Xcode。
+
+## 使用
+
+1. 点击右上角圆形 **+** 或左侧空状态里的“添加主机”。
+2. 填写名称、主机、端口、用户名；认证方式选择“密码”或“私钥”；在“分组”中选择
+   已有分组（可先点侧栏标题旁的文件夹按钮新建分组）。
+3. 保存后双击左侧主机即可打开一个**新标签页**；重复双击同一主机会继续开新标签页。
+   标签区右侧的 **+** 会为当前选中的主机打开新标签页（未选中主机时打开快速连接）；
+   也可以使用 `⌘T`，或点击左上角的“快速连接”/`⌘N`。
+4. 管理分组：右键分组可重命名/删除/在该分组中新建主机；把主机行拖到分组标题即可
+   移动；右键主机选择“移动到分组”也可以。删除分组只会把主机移到“未分组”，不会
+   删除主机。
+5. 首次连接会显示主机密钥指纹，确认与服务器管理员提供的一致后点击“信任并连接”。
+6. 密码/私钥口令会在需要时通过独立面板询问；勾选“记住密码”可免去下次输入。
+
+## 快捷键
+
+| 快捷键 | 功能 |
+| --- | --- |
+| `⌘N` | 快速连接 |
+| `⇧⌘N` | 新建主机 |
+| `⌘T` | 新建标签页 |
+| `⌘W` | 关闭标签页（无标签时关闭窗口） |
+| `⇧⌘W` | 关闭窗口 |
+| `⌘R` | 重新连接当前会话 |
+| `⇧⌘D` | 断开当前会话 |
+| `⇧⌘]` / `⇧⌘[` | 下一个 / 上一个标签页 |
+| `⌘1`–`⌘9` | 跳转到指定标签页 |
+| `⌘K` | 清空屏幕与回滚缓冲 |
+| `⌘C` / `⌘V` / `⌘A` | 复制 / 粘贴 / 全选 |
+| `⌘=` / `⌘-` / `⌘0` | 放大 / 缩小 / 恢复字号 |
+| `⌃⌘S` | 折叠 / 展开侧边栏 |
+| `⌘,` | 设置 |
+
+终端内：
+
+- `⌘C` 在没有选区时会向远端发送 `Ctrl-C`。
+- `Option` 作为 Meta 键发送 `ESC` 前缀；`Ctrl` 组合键按终端控制字符发送。
+- `⇧PageUp` / `⇧PageDown`：本地回滚。
+- 拖入文件：自动转义并插入文件路径。
+- 支持括号粘贴、输入法预编辑、窗口大小变化同步到远端 PTY。
+
+## 数据与凭据
+
+| 内容 | 位置 |
+| --- | --- |
+| 主机档案与分组 | `~/Library/Application Support/cTerm/hosts.json`（权限 `0600`，版本化 JSON） |
+| 已知主机指纹 | `~/Library/Application Support/cTerm/known_hosts.json`（权限 `0600`） |
+| 密码/私钥口令、私钥副本、同步密码、OneDrive 授权 | `~/Library/Application Support/cTerm/credentials.json`（主密码加密，权限 `0600`） |
+| 已解锁私钥临时文件 | 私有临时目录 `0700`，文件 `0600`，读取后立即删除 |
+
+`hosts.json` 不保存密码或口令。删除主机时，会同时删除该主机记住的密码或口令。
+
+### 主机密钥与安全
+
+- 首次连接使用 Trust On First Use（TOFU），不会静默接受未知主机。
+- 指纹以 OpenSSH 公钥的 SHA-256 计算，并在信任确认面板中展示。
+- 如果同一主机的密钥发生变化，面板会显示旧/新指纹，并使用更醒目的警告样式。
+- release 构建不包含任何自动信任/调试后门；主机密钥校验委托只通过用户确认才会写入。
+- 加密私钥的解锁使用 macOS 自带的 `/usr/bin/ssh-keygen`。这是为了兼容新版
+  OpenSSH 的 bcrypt 参数；SSH 传输本身仍由纯 Swift 协议栈完成。
+
+## 已知限制
+
+当前版本聚焦“稳定可用的 SSH 终端”，以下功能尚未实现：
+
+- 不支持 keyboard-interactive / 2FA 动态口令（SwiftNIO SSH 0.3 的认证 API 限制）。
+- 不支持 ssh-agent、`~/.ssh/config` 自动导入、ProxyJump/跳板机。
+- 不支持 SFTP 文件浏览、端口转发、会话录制。
+- 私钥仅支持 OpenSSH 格式的 Ed25519 与 RSA；ECDSA、PuTTY `.ppk`、旧式 PEM 私钥暂不支持。
+- 主机指纹使用 cTerm 自己的 `known_hosts.json`，不会读取 OpenSSH 的
+  `~/.ssh/known_hosts`。
+- 终端不向远端上报鼠标事件；滚轮在备用屏幕中按方向键滚动。
+
+## 项目结构
+
+```
+Sources/
+  TerminalCore/          VT100/xterm 网格、解析器、颜色、Unicode 宽度
+  cTerm/
+    Models/              主机档案、JSON 存储、凭据文件
+    SSH/                 SSH 连接、PTY、主机指纹、私钥解析
+    UI/                  AppKit 界面、终端渲染、主题、设置
+    AppDelegate.swift    菜单栏与生命周期
+Tests/
+  TerminalCoreTests/     21 个终端核心测试
+Resources/               应用图标与 Info.plist
+Screenshots/             README 截图
+scripts/make_icon.py     图标生成脚本（Pillow）
+```
+
+## 测试状态
+
+- `swift test`：21 个终端核心测试全部通过（解析、SGR、滚动、备用屏幕、宽字符、
+  缩放、光标、OSC、粘贴模式等）。
+- 已在 macOS 26.6 / Swift 6.4 上完成 Release 构建，并验证窗口缩放、标签页多开、
+  分组持久化与旧版 `hosts.json` 迁移。
+- 已通过真实服务器 `test.rebex.net` 验证密码认证、SSH 握手、PTY 会话、键盘输入、
+  256 色输出和主机指纹记录。
+- Debug 构建还包含离屏 UI 快照与 SSH 冒烟测试入口，便于维护者做视觉回归；这些
+  代码不会编译进 release。
+
+## 第三方
+
+SSH 协议栈依赖 Citadel / SwiftNIO SSH / SwiftNIO / swift-crypto，详见
+[THIRD_PARTY.md](THIRD_PARTY.md)。cTerm 自身以 MIT 许可证发布，见 [LICENSE](LICENSE)。
