@@ -14,6 +14,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private var hasCompletedInitialPresentation = false
     private let ignoresSystemAppearance: Bool
     private var appearanceObserver: NSObjectProtocol?
+    private var aiShortcutMonitor: Any?
 
     init(hostStore: HostStore, knownHosts: KnownHostsStore, theme: TerminalTheme? = nil) {
         let initialTheme = theme ?? AppearancePreferences.theme
@@ -46,6 +47,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         window.acceptsMouseMovedEvents = true
         window.isMovableByWindowBackground = false
         super.init(window: window)
+        installAIShortcut()
 
         window.delegate = self
         sidebarVC.delegate = self
@@ -144,7 +146,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// ⌘ plus the key left of 1 toggles AI mode. Matched by key code, so it
+    /// works whatever that key types (` or · with a Chinese input source), and
+    /// before the system can take ⌘` for cycling windows.
+    private func installAIShortcut() {
+        aiShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard event.keyCode == 50, modifiers == .command, let self, let window = self.window,
+                  event.window === window, window.attachedSheet == nil else { return event }
+            self.toggleAIMode(nil)
+            return nil
+        }
+    }
+
     deinit {
+        if let aiShortcutMonitor { NSEvent.removeMonitor(aiShortcutMonitor) }
         NotificationCenter.default.removeObserver(self)
         if let appearanceObserver {
             DistributedNotificationCenter.default().removeObserver(appearanceObserver)
@@ -301,6 +317,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             guard let self, let session else { return }
             self.editHost(session.profile, session: session)
         }
+        session.onRequestAISettings = {
+            NotificationCenter.default.post(name: .ctermShowAISettings, object: nil)
+        }
         session.onRememberSecretChanged = { [weak self, weak session] remember in
             guard let self, let session, !session.isTemporary else { return }
             var updated = session.profile
@@ -365,8 +384,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         rootVC.toggleSidebar()
     }
 
+    @objc func toggleSFTPPanel(_ sender: Any?) {
+        sessionHost.selectedSession?.toggleSFTPPanel()
+    }
+
+    @objc func toggleAIMode(_ sender: Any?) {
+        guard let session = sessionHost.selectedSession else {
+            NSSound.beep()
+            return
+        }
+        session.toggleAIMode()
+    }
+
     private func closeSession(at index: Int) {
         guard index >= 0, index < sessionHost.sessions.count else { return }
+        let session = sessionHost.sessions[index]
+        if session.hasActiveTransfers, let window {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "关闭“\(session.tabTitle)”？"
+            alert.informativeText = "这个标签还有正在进行的 SFTP 传输，关闭后会被取消。"
+            alert.addButton(withTitle: "关闭并取消传输")
+            alert.addButton(withTitle: "取消")
+            alert.beginSheetModal(for: window) { [weak self, weak session] response in
+                guard response == .alertFirstButtonReturn, let self, let session,
+                      let current = self.sessionHost.sessions.firstIndex(where: { $0.id == session.id }) else { return }
+                self.removeSession(at: current)
+            }
+            return
+        }
+        removeSession(at: index)
+    }
+
+    private func removeSession(at index: Int) {
         sessionHost.removeSession(at: index)
         updateSidebarStatuses()
         updateWindowTitle(session: sessionHost.selectedSession)
@@ -456,6 +506,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     func debugOpenSession(profile: HostProfile) {
         openSession(profile: profile)
     }
+
+    var debugSplitDescription: String { sessionHost.debugSplitDescription }
+    var debugSessionHost: SessionHostViewController { sessionHost }
+
+    var debugSFTPPanel: SFTPPanelViewController? {
+        sessionHost.selectedSession?.sftpPanel
+    }
+
+    var debugSelectedSession: SessionViewController? {
+        sessionHost.selectedSession
+    }
     #endif
 
     func shutdown() {
@@ -533,6 +594,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return sessionHost.sessions.count > 1
         case #selector(selectTabByNumber(_:)):
             return menuItem.tag - 1 < sessionHost.sessions.count
+        case #selector(toggleAIMode(_:)):
+            menuItem.title = sessionHost.selectedSession?.isAIModeOn == true ? "退出 AI 模式" : "进入 AI 模式"
+            return sessionHost.selectedSession != nil
+        case #selector(toggleSFTPPanel(_:)):
+            let session = sessionHost.selectedSession
+            menuItem.title = session?.isSFTPPanelVisible == true ? "隐藏 SFTP 文件" : "显示 SFTP 文件"
+            return session?.supportsSFTP == true
         case #selector(toggleSidebar(_:)):
             menuItem.title = rootVC.isSidebarCollapsed ? "显示侧边栏" : "隐藏侧边栏"
             return true

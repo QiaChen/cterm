@@ -10,7 +10,7 @@ protocol SidebarViewControllerDelegate: AnyObject {
 }
 
 extension NSPasteboard.PasteboardType {
-    static let ctermHostID = NSPasteboard.PasteboardType("dev.cterm.host-id")
+    static let ctermHostID = NSPasteboard.PasteboardType("me.cqq.cterm.host-id")
 }
 
 // MARK: - Outline nodes

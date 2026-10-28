@@ -37,13 +37,15 @@ final class WelcomeViewController: NSViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    private let divider = HairlineView(color: .clear)
+
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
         view.translatesAutoresizingMaskIntoConstraints = false
 
-        let divider = HairlineView(color: theme.border.withAlphaComponent(0.7))
+        divider.color = theme.sidebarDivider
         divider.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
         let stack = NSStackView()
@@ -113,6 +115,7 @@ final class WelcomeViewController: NSViewController {
         }
         let features: [(String, String)] = [
             ("square.stack.3d.up.fill", "多标签会话"),
+            ("folder.fill", "SFTP 文件管理"),
             ("checkmark.shield.fill", "主机指纹校验"),
             ("lock.icloud.fill", "加密云同步")
         ]
@@ -154,6 +157,7 @@ final class WelcomeViewController: NSViewController {
         localTerminalButton.titleColor = theme.tabText
         localTerminalButton.needsDisplay = true
         iconBadge.layer?.backgroundColor = theme.accent.withAlphaComponent(0.18).cgColor
+        divider.color = theme.sidebarDivider
         subtitleLabel.needsDisplay = true
         rebuildFeatures()
     }

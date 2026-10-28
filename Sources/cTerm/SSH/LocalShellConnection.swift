@@ -52,6 +52,18 @@ final class LocalShellConnection {
         (shellPath as NSString).lastPathComponent
     }
 
+    /// The shell's working directory, read from the kernel, so it is right
+    /// even when the prompt doesn't report it.
+    var currentDirectory: String? {
+        guard pid > 0 else { return nil }
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        return withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+        }
+    }
+
     func connect() {
         guard state == .idle else { return }
         state = .connecting

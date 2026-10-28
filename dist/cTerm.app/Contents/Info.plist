@@ -11,7 +11,7 @@
 	<key>CFBundleIconFile</key>
 	<string>cTerm</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.cterm.app</string>
+	<string>me.cqq.cterm</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

@@ -12,6 +12,8 @@ final class SessionViewController: NSViewController {
 
     private let knownHosts: KnownHostsStore
     private let overlay: SessionOverlayView
+    /// This tab's file panel. The session host shows it beside the tabs.
+    private(set) var sftpPanel: SFTPPanelViewController?
     private var theme: TerminalTheme
     private var connection: (any TerminalConnection)?
     private var started = false
@@ -26,6 +28,15 @@ final class SessionViewController: NSViewController {
     var onRequestClose: (() -> Void)?
     var onRequestEdit: (() -> Void)?
     var onRememberSecretChanged: ((Bool) -> Void)?
+    var onSFTPVisibilityChanged: (() -> Void)?
+    var onRequestAISettings: (() -> Void)?
+
+    private(set) var isSFTPPanelVisible = false
+
+    /// AI mode: typing goes to an "✦ AI ›" line in the terminal instead of
+    /// the shell, and a suggested command reaches the shell only on Enter.
+    private(set) var isAIModeOn = false
+    private var aiMode: TerminalAIMode?
 
     private(set) var state: SSHSessionState = .idle
 
@@ -144,6 +155,8 @@ final class SessionViewController: NSViewController {
     func prepareForClose() {
         guard !isClosed else { return }
         isClosed = true
+        sftpPanel?.shutdown()
+        aiMode?.conversation.reset()
         connectTask?.cancel()
         connection?.disconnect()
         connection = nil
@@ -259,6 +272,10 @@ final class SessionViewController: NSViewController {
     }
 
     private func handleState(_ state: SSHSessionState) {
+        if state != .connected, isAIModeOn {
+            aiMode?.abandon()
+            aiMode?.onExit?()
+        }
         switch state {
         case .idle:
             break
@@ -273,8 +290,10 @@ final class SessionViewController: NSViewController {
             overlay.hideConnecting()
             view.window?.makeFirstResponder(terminalView)
             onTitleChanged?()
+            if isSFTPPanelVisible { sftpPanel?.connectIfNeeded() }
         case .failed(let message):
             terminalView.isInputEnabled = false
+            sftpPanel?.connectionDidEnd()
             if message.contains("认证失败") {
                 CredentialStore.delete(account: CredentialStore.account(for: profile.id, kind: "password"))
                 CredentialStore.delete(account: CredentialStore.account(for: profile.id, kind: "passphrase"))
@@ -291,6 +310,7 @@ final class SessionViewController: NSViewController {
             onTitleChanged?()
         case .disconnected:
             terminalView.isInputEnabled = false
+            sftpPanel?.connectionDidEnd()
         }
     }
 
@@ -331,6 +351,7 @@ final class SessionViewController: NSViewController {
         connectTask?.cancel()
         connection?.disconnect()
         connection = nil
+        sftpPanel?.connectionDidEnd()
         terminal.reset()
         terminalView.resetViewState()
         terminalView.isInputEnabled = false
@@ -362,6 +383,8 @@ final class SessionViewController: NSViewController {
         terminalView.backgroundOpacity = theme.isDark ? 0 : 0.04
         terminalView.theme = theme
         overlay.apply(theme: theme)
+        sftpPanel?.apply(theme: theme)
+        aiMode?.apply(theme: theme)
     }
 
     func applyFontSize() {
@@ -572,3 +595,143 @@ final class SessionViewController: NSViewController {
 }
 
 private struct UserCancelledConnection: Error {}
+
+// MARK: - SFTP panel
+
+extension SessionViewController {
+    /// SFTP rides on the session's SSH connection, so local shells have none.
+    var supportsSFTP: Bool { !profile.isLocal && !demoMode }
+
+    var hasActiveTransfers: Bool { sftpPanel?.hasActiveTransfers == true }
+
+    // MARK: - AI mode
+
+    func toggleAIMode() {
+        setAIMode(!isAIModeOn)
+    }
+
+    func setAIMode(_ on: Bool) {
+        guard on != isAIModeOn, isViewLoaded else { return }
+        if on {
+            guard state == .connected, connection != nil else {
+                NSSound.beep()
+                return
+            }
+            if terminal.isAlternateScreen {
+                showAINotice("终端正在运行全屏程序", "请先退出 vim、top、less 等全屏程序，回到命令提示符后再进入 AI 模式。")
+                return
+            }
+            isAIModeOn = true
+            let mode = aiMode ?? makeAIMode()
+            terminalView.onSend = { [weak mode] data in mode?.handle(data) }
+            terminalView.scrollToBottom()
+            mode.begin()
+            view.window?.makeFirstResponder(terminalView)
+        } else {
+            // Leaving goes through the mode, which hands the line back.
+            aiMode?.end()
+        }
+    }
+
+    private func makeAIMode() -> TerminalAIMode {
+        let mode = TerminalAIMode(terminal: terminal, theme: theme)
+        mode.sendToShell = { [weak self] data in self?.connection?.send(data) }
+        mode.contextProvider = { [weak self] in
+            self?.aiContext() ?? AITerminalContext(session: "", workingDirectory: nil, screen: "", isFullScreenProgram: false)
+        }
+        mode.onExit = { [weak self] in
+            guard let self else { return }
+            self.isAIModeOn = false
+            self.terminalView.onSend = { [weak self] data in self?.connection?.send(data) }
+            self.onStateChanged?()
+        }
+        mode.onOpenSettings = { [weak self] in self?.onRequestAISettings?() }
+        aiMode = mode
+        return mode
+    }
+
+    private func showAINotice(_ title: String, _ message: String) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "好")
+        alert.beginSheetModal(for: window)
+    }
+
+    private func aiContext() -> AITerminalContext {
+        var session: String
+        if profile.isLocal {
+            let shell = (connection as? LocalShellConnection)?.shellName ?? "zsh"
+            session = "本地终端：这台 Mac（macOS），shell 为 \(shell)"
+        } else {
+            session = "SSH 远程主机：\(profile.username)@\(profile.host):\(profile.port)"
+            if profile.displayName != profile.host { session += "（\(profile.displayName)）" }
+        }
+        let directory = (connection as? LocalShellConnection)?.currentDirectory
+            ?? terminal.workingDirectory
+            ?? Self.directory(fromTitle: remoteTitle)
+        return AITerminalContext(session: session, workingDirectory: directory,
+                                 screen: screenText(lines: AISettings.contextLines),
+                                 isFullScreenProgram: terminal.isAlternateScreen)
+    }
+
+    /// The last lines of the terminal, ending at the cursor's line.
+    private func screenText(lines count: Int) -> String {
+        var end = terminal.totalLineCount
+        while end > 0, end - 1 > terminal.cursorLine, terminal.lineText(line: end - 1).isEmpty { end -= 1 }
+        let start = max(0, end - count)
+        return (start..<end).map { terminal.lineText(line: $0) }.joined(separator: "\n")
+    }
+
+    /// Many shells put "user@host: ~/dir" in the window title.
+    static func directory(fromTitle title: String?) -> String? {
+        guard let title,
+              let match = title.range(of: #"^[^@\s]+@[^:\s]+:\s*([~/].*)$"#, options: .regularExpression) else { return nil }
+        let text = String(title[match])
+        guard let colon = text.firstIndex(of: ":") else { return nil }
+        let path = text[text.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        return path.isEmpty ? nil : path
+    }
+
+    #if DEBUG
+    var debugAIMode: TerminalAIMode? { aiMode }
+    #endif
+
+    func toggleSFTPPanel() {
+        setSFTPPanelVisible(!isSFTPPanelVisible)
+    }
+
+    func setSFTPPanelVisible(_ visible: Bool) {
+        guard visible != isSFTPPanelVisible, supportsSFTP || !visible else { return }
+        let panel = sftpPanel ?? makeSFTPPanel()
+        if !visible, let responder = view.window?.firstResponder as? NSView, panel.isViewLoaded,
+           responder.isDescendant(of: panel.view) {
+            view.window?.makeFirstResponder(terminalView)
+        }
+        isSFTPPanelVisible = visible
+        // The host places the panel; it must be on screen before it connects.
+        onSFTPVisibilityChanged?()
+        if visible, state == .connected { panel.connectIfNeeded() }
+    }
+
+    private func makeSFTPPanel() -> SFTPPanelViewController {
+        let panel = SFTPPanelViewController(theme: theme)
+        panel.openClient = { [weak self] in
+            guard let ssh = self?.connection as? SSHConnection else { throw SFTPUnavailable() }
+            return try await ssh.openSFTP()
+        }
+        panel.runCommand = { [weak self] command in
+            guard let ssh = self?.connection as? SSHConnection else { throw SFTPUnavailable() }
+            return try await ssh.runCommand(command)
+        }
+        panel.onChangeDirectoryInTerminal = { [weak self] path in
+            guard let self, self.state == .connected else { return }
+            self.connection?.send(Data("cd \(RemotePath.shellQuoted(path))\r".utf8))
+            self.view.window?.makeFirstResponder(self.terminalView)
+        }
+        addChild(panel)
+        sftpPanel = panel
+        return panel
+    }
+}

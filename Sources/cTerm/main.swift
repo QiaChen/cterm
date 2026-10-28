@@ -19,6 +19,16 @@ if arguments.contains("--ssh-smoke") {
         SSHSmokeTest.run()
     }
 }
+if arguments.contains("--ai-smoke") {
+    MainActor.assumeIsolated {
+        AISmokeTest.run()
+    }
+}
+if arguments.contains("--sftp-smoke") {
+    MainActor.assumeIsolated {
+        SFTPSmokeTest.run()
+    }
+}
 if let snapshotIndex = arguments.firstIndex(of: "--snapshot"),
    snapshotIndex + 1 < arguments.count {
     MainActor.assumeIsolated {

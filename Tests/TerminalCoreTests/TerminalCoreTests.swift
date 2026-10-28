@@ -173,18 +173,53 @@ final class TerminalCoreTests: XCTestCase {
         XCTAssertEqual(term.cursorRow, 0)
     }
 
-    func testResizeClampsAndPads() {
+    func testResizeReflowsInsteadOfCutting() {
         let term = makeTerminal("abcdef\r\nghijkl", cols: 10, rows: 4)
         term.resize(columns: 5, rows: 2)
         XCTAssertEqual(term.cols, 5)
         XCTAssertEqual(term.rows, 2)
-        XCTAssertEqual(term.lineText(line: 0), "abcde")
-        XCTAssertEqual(term.lineText(line: 1), "ghijk")
         XCTAssertLessThan(term.cursorCol, 5)
         term.resize(columns: 8, rows: 4)
         XCTAssertEqual(term.cols, 8)
         XCTAssertEqual(term.rows, 4)
-        XCTAssertEqual(term.lineText(line: 0), "abcde")
+        XCTAssertEqual(term.lineText(line: 0), "abcdef")
+        XCTAssertEqual(term.lineText(line: 1), "ghijkl")
+    }
+
+    func testShrinkThenWidenKeepsLongLines() {
+        let motd = "Welcome to Ubuntu 26.04 LTS (GNU/Linux 7.0.0-31-generic x86_64)"
+        let term = makeTerminal(motd + "\r\nroot@vm:~# ", cols: 80, rows: 10)
+        term.resize(columns: 40, rows: 10)
+        XCTAssertEqual(term.lineText(line: 0), String(motd.prefix(40)))
+        XCTAssertTrue(term.isWrapped(line: 0))
+        term.resize(columns: 80, rows: 10)
+        XCTAssertEqual(term.lineText(line: 0), motd)
+        XCTAssertEqual(term.lineText(line: term.cursorLine), "root@vm:~#")
+        XCTAssertEqual(term.cursorCol, 11)
+        term.feed("ls")
+        XCTAssertEqual(term.lineText(line: term.cursorLine), "root@vm:~# ls")
+    }
+
+    func testReflowKeepsWideCharactersWhole() {
+        let term = makeTerminal("中文宽字符测试一二三四五六七八九十\r\n", cols: 20, rows: 5)
+        let before = (0..<term.totalLineCount).map { term.lineText(line: $0) }
+        for width in [7, 9, 11, 13, 5, 20] {
+            term.resize(columns: width, rows: 5)
+            for line in 0..<term.totalLineCount {
+                XCTAssertFalse(term.cell(line: line, column: 0).isContinuation)
+            }
+        }
+        XCTAssertEqual((0..<term.totalLineCount).map { term.lineText(line: $0) }, before)
+    }
+
+    func testAlternateScreenResizeRestoresReflowedMainScreen() {
+        let long = String(repeating: "0123456789", count: 6)
+        let term = makeTerminal(long + "\r\n$ ", cols: 70, rows: 6)
+        term.feed("\u{1b}[?1049h\u{1b}[HFULL")
+        term.resize(columns: 30, rows: 6)
+        term.resize(columns: 70, rows: 6)
+        term.feed("\u{1b}[?1049l")
+        XCTAssertEqual(term.lineText(line: 0), long)
     }
 
     func testDeleteLinesAndInsertLines() {

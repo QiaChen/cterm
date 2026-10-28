@@ -289,6 +289,92 @@ final class HandCursorButton: NSButton {
     }
 }
 
+/// A borderless symbol button with a round hover fill, like the tab bar's
+/// circular buttons.
+final class HoverIconButton: NSButton {
+    var hoverFill: NSColor = .clear {
+        didSet { updateFill() }
+    }
+    private var hovering = false
+    private var trackingAreaRef: NSTrackingArea?
+
+    init(symbol: String, pointSize: CGFloat, diameter: CGFloat, target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        symbolConfiguration = .init(pointSize: pointSize, weight: .regular)
+        imagePosition = .imageOnly
+        imageScaling = .scaleNone
+        isBordered = false
+        focusRingType = .none
+        self.target = target
+        self.action = action
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: diameter).isActive = true
+        heightAnchor.constraint(equalToConstant: diameter).isActive = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override var isEnabled: Bool {
+        didSet { updateFill() }
+    }
+
+    /// The fill is drawn rather than set on the layer: the button's layer
+    /// isn't always the view's size, which stretched the circle.
+    override func draw(_ dirtyRect: NSRect) {
+        if hovering && isEnabled {
+            let side = min(bounds.width, bounds.height)
+            let circle = NSRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
+            hoverFill.setFill()
+            NSBezierPath(ovalIn: circle).fill()
+        }
+        super.draw(dirtyRect)
+    }
+
+    #if DEBUG
+    func debugSetHovering(_ value: Bool) {
+        hovering = value
+        updateFill()
+    }
+    #endif
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaRef { removeTrackingArea(trackingAreaRef) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingAreaRef = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        updateFill()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        updateFill()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        hovering = false
+        updateFill()
+    }
+
+    private func updateFill() {
+        needsDisplay = true
+    }
+}
+
 /// A checkbox whose title is a plain label. On macOS 26 a switch button draws
 /// its own title in black in our dark dialogs, ignoring both the appearance and
 /// an attributed title colour, so the box carries no title and a themed label

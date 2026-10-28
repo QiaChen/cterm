@@ -17,8 +17,11 @@ final class SessionOverlayView: NSView {
     private let cardTint = ColorView(color: .clear)
     private let spinner = NSProgressIndicator()
     private let iconBadge: SymbolBadgeView
-    private let titleLabel = UIFactory.label("", size: 18, weight: .semibold, color: .labelColor, alignment: .center)
-    private let detailLabel = UIFactory.wrappingLabel("", size: 13, color: .secondaryLabelColor)
+    private let titleLabel = UIFactory.label("", size: 16, weight: .semibold, color: .labelColor, alignment: .center)
+    private let detailLabel = UIFactory.wrappingLabel("", size: 12.5, color: .secondaryLabelColor)
+    /// The primary button is the accent only when it recovers the session
+    /// (retry, reconnect); "取消" while connecting stays a quiet pill.
+    private var primaryIsAccent = false
     private let primaryButton: ChromeButton
     private let secondaryButton: ChromeButton
     private let tertiaryButton: ChromeButton
@@ -33,7 +36,7 @@ final class SessionOverlayView: NSView {
             symbol: "exclamationmark.triangle.fill",
             background: NSColor.systemOrange.withAlphaComponent(0.12),
             tint: .systemOrange,
-            size: 46
+            size: 40
         )
         primaryButton = ChromeButton(shape: .pill, title: "取消", target: nil, action: nil)
         secondaryButton = ChromeButton(shape: .pill, title: "关闭", target: nil, action: nil)
@@ -70,7 +73,7 @@ final class SessionOverlayView: NSView {
         NSLayoutConstraint.activate([
             card.centerXAnchor.constraint(equalTo: centerXAnchor),
             card.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -18),
-            card.widthAnchor.constraint(equalToConstant: 500),
+            card.widthAnchor.constraint(equalToConstant: 380),
             card.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 24),
             card.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -24)
         ])
@@ -79,16 +82,17 @@ final class SessionOverlayView: NSView {
         spinner.controlSize = .regular
         spinner.isDisplayedWhenStopped = false
         spinner.translatesAutoresizingMaskIntoConstraints = false
-        spinner.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        spinner.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        spinner.controlSize = .small
+        spinner.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        spinner.heightAnchor.constraint(equalToConstant: 20).isActive = true
 
         titleLabel.alignment = .center
-        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         detailLabel.alignment = .center
         detailLabel.maximumNumberOfLines = 6
         detailLabel.isSelectable = true
         detailLabel.lineBreakMode = .byWordWrapping
-        detailLabel.preferredMaxLayoutWidth = 430
+        detailLabel.preferredMaxLayoutWidth = 330
 
         buttonStack.orientation = .horizontal
         buttonStack.alignment = .centerY
@@ -106,25 +110,25 @@ final class SessionOverlayView: NSView {
         tertiaryButton.action = #selector(tertiaryPressed)
 
         for button in [primaryButton, secondaryButton, tertiaryButton] {
-            button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 30).isActive = true
         }
-        primaryButton.widthAnchor.constraint(equalToConstant: 98).isActive = true
-        secondaryButton.widthAnchor.constraint(equalToConstant: 82).isActive = true
-        tertiaryButton.widthAnchor.constraint(equalToConstant: 98).isActive = true
+        primaryButton.widthAnchor.constraint(equalToConstant: 92).isActive = true
+        secondaryButton.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        tertiaryButton.widthAnchor.constraint(equalToConstant: 92).isActive = true
 
         let content = NSStackView(views: [spinner, iconBadge, titleLabel, detailLabel, buttonStack])
         content.orientation = .vertical
         content.alignment = .centerX
-        content.spacing = 12
-        content.setCustomSpacing(16, after: detailLabel)
+        content.spacing = 10
+        content.setCustomSpacing(4, after: titleLabel)
+        content.setCustomSpacing(18, after: detailLabel)
         content.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(content)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 28),
-            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -24),
-            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 26),
-            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -26),
-            spinner.heightAnchor.constraint(equalToConstant: 26),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 26),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -22),
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
             titleLabel.widthAnchor.constraint(equalTo: content.widthAnchor),
             detailLabel.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
@@ -142,31 +146,47 @@ final class SessionOverlayView: NSView {
         self.theme = theme
         layer?.backgroundColor = theme.background.withAlphaComponent(theme.isDark ? 0.28 : 0.12).cgColor
         card.fillColor = .clear
+        // Tinted with the same background as the terminal glass, so the card
+        // reads as a raised piece of that surface rather than a grey slab.
         cardTint.color = theme.isDark
-            ? theme.tabActiveBackground.withAlphaComponent(0.48)
-            : theme.background.withAlphaComponent(0.35)
-        card.borderColor = theme.border
+            ? theme.background.withAlphaComponent(0.55)
+            : NSColor.white.withAlphaComponent(0.62)
+        card.borderColor = theme.pillBorder
         card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = theme.isDark ? 0.32 : 0.10
-        card.layer?.shadowRadius = 22
-        card.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        card.layer?.shadowOpacity = theme.isDark ? 0.22 : 0.07
+        card.layer?.shadowRadius = 18
+        card.layer?.shadowOffset = CGSize(width: 0, height: -4)
 
-        primaryButton.fillColor = theme.accent
-        primaryButton.hoverFillColor = theme.accent.blended(withFraction: 0.12, of: .white) ?? theme.accent
-        primaryButton.borderColor = .clear
-        primaryButton.titleColor = .white
         for button in [secondaryButton, tertiaryButton] {
-            button.fillColor = theme.pillFill
-            button.hoverFillColor = theme.pillHoverFill
-            button.borderColor = theme.pillBorder
-            button.titleColor = theme.tabText
+            stylePill(button)
         }
+        stylePrimary()
         titleLabel.textColor = theme.foreground
         detailLabel.textColor = theme.subtle
         needsLayout = true
     }
 
+    private func stylePill(_ button: ChromeButton) {
+        button.fillColor = theme.pillFill
+        button.hoverFillColor = theme.pillHoverFill
+        button.borderColor = theme.pillBorder
+        button.titleColor = theme.tabText
+    }
+
+    private func stylePrimary() {
+        guard primaryIsAccent else {
+            stylePill(primaryButton)
+            return
+        }
+        primaryButton.fillColor = theme.accent
+        primaryButton.hoverFillColor = theme.accent.blended(withFraction: 0.12, of: .white) ?? theme.accent
+        primaryButton.borderColor = .clear
+        primaryButton.titleColor = .white
+    }
+
     func showConnecting(detail: String, showCancel: Bool = true) {
+        primaryIsAccent = false
+        stylePrimary()
         isHidden = false
         spinner.isHidden = false
         spinner.startAnimation(nil)
@@ -189,6 +209,8 @@ final class SessionOverlayView: NSView {
     }
 
     func showFailure(title: String, detail: String, allowsEdit: Bool = true) {
+        primaryIsAccent = true
+        stylePrimary()
         spinner.stopAnimation(nil)
         spinner.isHidden = true
         iconBadge.isHidden = false
@@ -197,7 +219,7 @@ final class SessionOverlayView: NSView {
             background: warning.withAlphaComponent(0.12),
             tint: warning,
             symbol: "exclamationmark.triangle.fill",
-            pointSize: 21
+            pointSize: 18
         )
         titleLabel.stringValue = title
         titleLabel.textColor = theme.foreground
@@ -216,6 +238,8 @@ final class SessionOverlayView: NSView {
     }
 
     func showDisconnected(detail: String, title: String = "连接已断开", retryTitle: String = "重新连接") {
+        primaryIsAccent = true
+        stylePrimary()
         spinner.stopAnimation(nil)
         spinner.isHidden = true
         iconBadge.isHidden = false
@@ -223,7 +247,7 @@ final class SessionOverlayView: NSView {
             background: theme.subtle.withAlphaComponent(0.12),
             tint: theme.subtle,
             symbol: "bolt.slash.fill",
-            pointSize: 21
+            pointSize: 18
         )
         titleLabel.stringValue = title
         titleLabel.textColor = theme.foreground

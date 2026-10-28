@@ -305,8 +305,10 @@ enum SnapshotRunner {
     }
 
     @MainActor
-    private static func renderSettings(theme: TerminalTheme, directory: URL, name: String = "settings.png") {
+    private static func renderSettings(theme: TerminalTheme, directory: URL, name: String = "settings.png",
+                                       tab: SettingsTab = .general) {
         let controller = SettingsWindowController()
+        controller.showTab(tab)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -332,10 +334,12 @@ enum SnapshotRunner {
 
         let manager = CloudSyncManager.shared
         manager.statusOverride = .disabled
-        renderSettings(theme: theme, directory: directory, name: "settings-sync-off-\(suffix).png")
+        renderSettings(theme: theme, directory: directory, name: "settings-general-\(suffix).png")
+        renderSettings(theme: theme, directory: directory, name: "settings-ai-\(suffix).png", tab: .ai)
+        renderSettings(theme: theme, directory: directory, name: "settings-sync-off-\(suffix).png", tab: .sync)
         manager.preview = ("cole@outlook.com", "cterm-hosts.ctermsync", Date().addingTimeInterval(-120))
         manager.statusOverride = .synced(Date().addingTimeInterval(-120))
-        renderSettings(theme: theme, directory: directory, name: "settings-sync-on-\(suffix).png")
+        renderSettings(theme: theme, directory: directory, name: "settings-sync-on-\(suffix).png", tab: .sync)
         manager.preview = nil
 
         renderSheet(MasterPasswordViewController(

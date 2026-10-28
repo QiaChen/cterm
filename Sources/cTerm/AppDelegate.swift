@@ -17,6 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var unlockWindowController: UnlockWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.migrateDefaultsFromOldBundleID()
+        NotificationCenter.default.addObserver(forName: .ctermShowAISettings, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.showSettings(nil)
+                self?.settingsWindowController?.showTab(.ai)
+            }
+        }
         // The menu exists from the start so ⌘Q works in the unlock window; it
         // is rebuilt once the main window exists to target it.
         buildMenu()
@@ -189,6 +196,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         toggle.keyEquivalentModifierMask = [.command, .control]
         toggle.target = mainWindowController
         sessionMenu.addItem(toggle)
+        let sftp = NSMenuItem(title: "显示 SFTP 文件", action: #selector(MainWindowController.toggleSFTPPanel(_:)), keyEquivalent: "b")
+        sftp.keyEquivalentModifierMask = [.command, .shift]
+        sftp.target = mainWindowController
+        sessionMenu.addItem(sftp)
+        // ⌘` (⌘· with a Chinese input source). A key monitor also catches it,
+        // since the system may claim ⌘` for cycling windows.
+        let ai = NSMenuItem(title: "进入 AI 模式", action: #selector(MainWindowController.toggleAIMode(_:)), keyEquivalent: "`")
+        ai.keyEquivalentModifierMask = [.command]
+        ai.target = mainWindowController
+        sessionMenu.addItem(ai)
 
         // View menu.
         let viewItem = NSMenuItem()
@@ -239,6 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let help = NSMenuItem(title: "cTerm 帮助", action: #selector(showHelp(_:)), keyEquivalent: "?")
         help.target = self
         helpMenu.addItem(help)
+        let website = NSMenuItem(title: "官方网站", action: #selector(openWebsite(_:)), keyEquivalent: "")
+        website.target = self
+        helpMenu.addItem(website)
         NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = mainMenu
@@ -287,6 +307,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func followSystemTheme(_ sender: Any?) {
         AppearancePreferences.followsSystemAppearance = true
+    }
+
+    /// Earlier builds used the bundle ID dev.cterm.app. Settings kept in
+    /// UserDefaults (theme, panel width, editor choices…) are copied over once;
+    /// hosts and credentials live in Application Support and need nothing.
+    private static func migrateDefaultsFromOldBundleID() {
+        let defaults = UserDefaults.standard
+        let doneKey = "cterm.migratedFromDevBundleID"
+        guard !defaults.bool(forKey: doneKey) else { return }
+        if Bundle.main.bundleIdentifier == "me.cqq.cterm",
+           let old = defaults.persistentDomain(forName: "dev.cterm.app") {
+            for (key, value) in old where defaults.object(forKey: key) == nil {
+                defaults.set(value, forKey: key)
+            }
+        }
+        defaults.set(true, forKey: doneKey)
+    }
+
+    @objc private func openWebsite(_ sender: Any?) {
+        if let url = URL(string: "https://cterm.cqq.me") { NSWorkspace.shared.open(url) }
     }
 
     @objc private func showHelp(_ sender: Any?) {

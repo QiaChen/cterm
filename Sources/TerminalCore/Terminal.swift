@@ -658,10 +658,8 @@ public final class Terminal {
     private func pushScrollback(_ line: TermLine) {
         guard scrollbackLimit > 0 else { return }
         var copy = line
-        copy.wrapped = false
-        while copy.cells.count > 1, copy.cells.last!.isVisuallyBlank() {
-            copy.cells.removeLast()
-        }
+        // Keep `wrapped`: resize reflow and line selection join on it.
+        copy.cells.removeLast(copy.cells.count - max(1, Self.usedWidth(copy.cells)))
         scrollback.append(copy)
         clearScrollbackIfNeeded()
         markDirty()
@@ -1669,27 +1667,31 @@ public final class Terminal {
     public func resize(columns newCols: Int, rows newRows: Int) {
         guard newCols >= 2, newRows >= 1, newCols != cols || newRows != rows else { return }
 
-        var activeCursorRow = cursorRow
-        resizeBuffer(
-            &screen,
-            newCols: newCols,
-            newRows: newRows,
-            pushToScrollback: !isAlternateScreen,
-            cursorRow: &activeCursorRow
-        )
-        cursorRow = activeCursorRow
-
-        if isAlternateScreen, var saved = savedMainScreen {
-            var savedRow = savedMainCursor?.row ?? 0
+        // The main buffer reflows, so shrinking the window never loses text
+        // and widening it joins wrapped lines back up. Full-screen apps on
+        // the alternate screen redraw on SIGWINCH, so that one is clipped.
+        if isAlternateScreen {
+            var activeCursorRow = cursorRow
             resizeBuffer(
-                &saved,
+                &screen,
                 newCols: newCols,
                 newRows: newRows,
-                pushToScrollback: true,
-                cursorRow: &savedRow
+                pushToScrollback: false,
+                cursorRow: &activeCursorRow
             )
-            savedMainScreen = saved
-            savedMainCursor?.row = savedRow
+            cursorRow = activeCursorRow
+            if let saved = savedMainScreen {
+                let cursor = (savedMainCursor?.row ?? 0, savedMainCursor?.col ?? 0)
+                let result = reflow(saved, cursor: cursor, newCols: newCols, newRows: newRows)
+                savedMainScreen = result.screen
+                savedMainCursor?.row = result.cursor.row
+                savedMainCursor?.col = min(result.cursor.col, newCols - 1)
+            }
+        } else {
+            let result = reflow(screen, cursor: (cursorRow, cursorCol), newCols: newCols, newRows: newRows)
+            screen = result.screen
+            cursorRow = result.cursor.row
+            cursorCol = result.cursor.col
         }
 
         cols = newCols
@@ -1718,6 +1720,156 @@ public final class Terminal {
         }
         tabStops = stops
         markDirty()
+    }
+
+    /// Re-wraps scrollback plus `screenLines` to `newCols`, then splits the
+    /// result into a new screen of `newRows` and the scrollback above it.
+    private func reflow(
+        _ screenLines: [TermLine],
+        cursor: (row: Int, col: Int),
+        newCols: Int,
+        newRows: Int
+    ) -> (screen: [TermLine], cursor: (row: Int, col: Int)) {
+        var source = scrollback
+        source.append(contentsOf: screenLines)
+        let cursorLine = scrollback.count + cursor.row
+
+        // Blank rows below both the cursor and the last text are just unused
+        // screen; drop them rather than pushing them into scrollback.
+        var end = source.count - 1
+        while end > cursorLine, source[end].cells.allSatisfy({ $0.isVisuallyBlank() }) {
+            end -= 1
+        }
+
+        var output: [TermLine] = []
+        output.reserveCapacity(end + 1)
+        var newCursor = (line: 0, col: 0)
+        var logical: [Cell] = []
+        var cursorOffset: Int?
+
+        var index = 0
+        while index <= end {
+            let line = source[index]
+            if index == cursorLine {
+                cursorOffset = logical.count + cursor.col
+            }
+            // Fast path: a lone line that already fits needs no re-wrapping,
+            // which keeps resizing cheap with a long scrollback.
+            if logical.isEmpty, !line.wrapped, index != cursorLine {
+                let used = Self.usedWidth(line.cells)
+                if used <= newCols {
+                    output.append(Self.fitted(line, to: newCols, used: used))
+                    index += 1
+                    continue
+                }
+            }
+            if line.wrapped {
+                var cells = line.cells[...]
+                // A wide character that didn't fit left a padding blank at
+                // the end of the row; it isn't part of the text.
+                if index < end, source[index + 1].cells.first?.width == 2,
+                   let last = cells.last, last.isVisuallyBlank(), last.text == " " {
+                    cells = cells.dropLast()
+                }
+                logical.append(contentsOf: cells)
+            } else {
+                logical.append(contentsOf: line.cells.prefix(Self.usedWidth(line.cells)))
+                let start = output.count
+                let placement = Self.wrap(logical, into: newCols, cursorOffset: cursorOffset, output: &output)
+                if cursorOffset != nil, let placement {
+                    newCursor = (start + placement.row, placement.col)
+                }
+                logical.removeAll(keepingCapacity: true)
+                cursorOffset = nil
+            }
+            index += 1
+        }
+        if !logical.isEmpty || cursorOffset != nil {
+            // The last line was still marked wrapped (the cursor sits after it).
+            let start = output.count
+            let placement = Self.wrap(logical, into: newCols, cursorOffset: cursorOffset, output: &output)
+            if cursorOffset != nil, let placement {
+                newCursor = (start + placement.row, placement.col)
+            }
+        }
+
+        // Keep the screen pinned to the bottom, but never above the cursor.
+        let top = min(max(0, output.count - newRows), newCursor.line)
+        var newScreen = Array(output[top..<min(output.count, top + newRows)])
+        while newScreen.count < newRows {
+            newScreen.append(TermLine(columns: newCols))
+        }
+        if scrollbackLimit > 0 {
+            scrollback = output[..<top].map { line in
+                var copy = line
+                copy.cells.removeLast(copy.cells.count - max(1, Self.usedWidth(copy.cells)))
+                return copy
+            }
+            clearScrollbackIfNeeded()
+        } else {
+            scrollback = []
+        }
+        return (newScreen, (newCursor.line - top, min(newCursor.col, newCols - 1)))
+    }
+
+    /// Columns up to and including the last visible cell. The right half of
+    /// a wide character counts as used even though it draws nothing.
+    private static func usedWidth(_ cells: [Cell]) -> Int {
+        var used = cells.count
+        while used > 0, !cells[used - 1].isContinuation, cells[used - 1].isVisuallyBlank() {
+            used -= 1
+        }
+        return used
+    }
+
+    private static func fitted(_ line: TermLine, to cols: Int, used: Int) -> TermLine {
+        var copy = line
+        if copy.cells.count > cols {
+            copy.cells.removeLast(copy.cells.count - max(cols, used))
+        } else if copy.cells.count < cols {
+            copy.cells.append(contentsOf: repeatElement(Cell.blank, count: cols - copy.cells.count))
+        }
+        copy.wrapped = false
+        return copy
+    }
+
+    /// Lays one logical line out in rows of `cols`, never splitting a wide
+    /// character. Returns where `cursorOffset` (a cell index into `cells`,
+    /// possibly past its end) lands.
+    @discardableResult
+    private static func wrap(_ cells: [Cell], into cols: Int, cursorOffset: Int?,
+                             output: inout [TermLine]) -> (row: Int, col: Int)? {
+        var rows: [[Cell]] = [[]]
+        var placement: (row: Int, col: Int)?
+        for (offset, cell) in cells.enumerated() {
+            if !cell.isContinuation {
+                let width = max(1, Int(cell.width))
+                if rows[rows.count - 1].count + width > cols {
+                    rows.append([])
+                }
+            }
+            if offset == cursorOffset {
+                placement = (rows.count - 1, rows[rows.count - 1].count)
+            }
+            rows[rows.count - 1].append(cell)
+        }
+        if let cursorOffset, placement == nil {
+            // Past the text, e.g. after a prompt's trailing space.
+            let lastRow = rows.count - 1
+            let linear = lastRow * cols + rows[lastRow].count + (cursorOffset - cells.count)
+            placement = (linear / cols, linear % cols)
+            while rows.count <= placement!.row {
+                rows.append([])
+            }
+        }
+        for (index, row) in rows.enumerated() {
+            var line = TermLine(cells: row, wrapped: index < rows.count - 1)
+            if line.cells.count < cols {
+                line.cells.append(contentsOf: repeatElement(Cell.blank, count: cols - line.cells.count))
+            }
+            output.append(line)
+        }
+        return placement
     }
 
     private func resizeBuffer(

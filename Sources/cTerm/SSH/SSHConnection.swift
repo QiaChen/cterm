@@ -1,5 +1,6 @@
 import Citadel
 import Foundation
+import Logging
 import NIOCore
 import NIOPosix
 import NIOSSH
@@ -185,6 +186,42 @@ final class SSHConnection {
         send(Data(text.utf8))
     }
 
+    /// Opens an SFTP channel on the already authenticated connection, so the
+    /// file panel needs no second login or host key check.
+    func openSFTP() async throws -> SFTPClient {
+        guard state == .connected, let client else {
+            throw SFTPUnavailable()
+        }
+        // Citadel logs every request at info level; keep only problems.
+        var logger = Logger(label: "cterm.sftp")
+        logger.logLevel = .warning
+        return try await client.openSFTP(logger: logger)
+    }
+
+    /// Runs a command on its own exec channel beside the shell, for file
+    /// operations SFTP has no request for (chmod, archives).
+    func runCommand(_ command: String) async throws -> RemoteCommandResult {
+        guard state == .connected, let client else {
+            throw SFTPUnavailable()
+        }
+        var stdout = ByteBuffer()
+        var stderr = ByteBuffer()
+        var exitCode: Int32 = 0
+        do {
+            for try await chunk in try await client.executeCommandStream(command) {
+                switch chunk {
+                case .stdout(var buffer): stdout.writeBuffer(&buffer)
+                case .stderr(var buffer): stderr.writeBuffer(&buffer)
+                }
+            }
+        } catch let failed as SSHClient.CommandFailed {
+            exitCode = Int32(truncatingIfNeeded: failed.exitCode)
+        }
+        return RemoteCommandResult(exitCode: exitCode,
+                                   output: String(buffer: stdout),
+                                   errorOutput: String(buffer: stderr))
+    }
+
     func resize(cols: Int, rows: Int) {
         let newCols = max(2, cols)
         let newRows = max(1, rows)
@@ -234,6 +271,10 @@ final class SSHConnection {
     }
 }
 
+struct SFTPUnavailable: LocalizedError {
+    var errorDescription: String? { "SSH 会话未连接。" }
+}
+
 enum SSHErrorMessage {
     static func describe(_ error: Error) -> String {
         if error is HostKeyRejected {
@@ -266,7 +307,9 @@ enum SSHErrorMessage {
             }
             return "SSH 协议错误：\(sshError.description)"
         }
-        let text = error.localizedDescription
+        // NIO's connection errors carry the cause (refused, timed out, …) in
+        // their description; localizedDescription is a generic sentence.
+        let text = error.localizedDescription + " " + String(describing: error)
         if text.localizedCaseInsensitiveContains("refused") {
             return "连接被拒绝：请检查主机、端口和防火墙设置。"
         }
@@ -284,6 +327,6 @@ enum SSHErrorMessage {
         if text.localizedCaseInsensitiveContains("closed") {
             return "连接已关闭：\(text)"
         }
-        return text
+        return error.localizedDescription
     }
 }

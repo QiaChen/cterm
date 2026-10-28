@@ -7,6 +7,7 @@ protocol SessionTabsViewDelegate: AnyObject {
     func tabsViewDidRequestQuickConnect(_ tabsView: SessionTabsView)
     func tabsView(_ tabsView: SessionTabsView, didRequestReconnect index: Int)
     func tabsView(_ tabsView: SessionTabsView, didRequestCloseOthers index: Int)
+    func tabsViewDidToggleSFTP(_ tabsView: SessionTabsView)
 }
 
 struct SessionTabItem {
@@ -21,6 +22,19 @@ struct SessionTabItem {
 
 /// Flat, integrated tabs that share the terminal's glass surface.
 final class SessionTabsView: NSView {
+    /// The SFTP panel toggle left of `+`, for the selected tab.
+    enum SFTPButtonState {
+        case hidden, inactive, active
+    }
+
+    /// Centre line of the icon buttons at the right of the title strip,
+    /// shared with the SFTP panel's header so both rows line up.
+    static let toolbarCenterY: CGFloat = 22
+    /// Tabs are as tall as the icon buttons and share their centre line.
+    private static let tabHeight: CGFloat = 30
+    private static let stripHeight: CGFloat = 44
+    private static let toolbarButtonSize: CGFloat = 30
+
     weak var delegate: SessionTabsViewDelegate?
 
     private(set) var items: [SessionTabItem] = []
@@ -29,6 +43,9 @@ final class SessionTabsView: NSView {
     private var hoveredIndex: Int?
     private var hoveredClose = false
     private var hoveredPlus = false
+    private var hoveredSFTP = false
+    private var sftpState: SFTPButtonState = .hidden
+    private var sftpRect: NSRect = .zero
     /// Where the first tab starts. Larger while the sidebar is hidden, to
     /// clear the window buttons and the sidebar toggle.
     var leadingInset: CGFloat = 16 {
@@ -56,7 +73,7 @@ final class SessionTabsView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
-        heightAnchor.constraint(equalToConstant: 46).isActive = true
+        heightAnchor.constraint(equalToConstant: Self.stripHeight).isActive = true
         layer?.backgroundColor = NSColor.clear.cgColor
     }
 
@@ -68,13 +85,15 @@ final class SessionTabsView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: 46)
+        NSSize(width: NSView.noIntrinsicMetric, height: Self.stripHeight)
     }
 
     override var isFlipped: Bool { true }
 
-    func update(items: [SessionTabItem], selectedIndex: Int, theme: TerminalTheme) {
+    func update(items: [SessionTabItem], selectedIndex: Int, theme: TerminalTheme,
+                sftp: SFTPButtonState = .hidden) {
         self.items = items
+        self.sftpState = sftp
         self.selectedIndex = min(max(0, selectedIndex), max(0, items.count - 1))
         self.theme = theme
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -115,12 +134,15 @@ final class SessionTabsView: NSView {
     private func recalculateRects() {
         tabRects = []
         closeRects = []
-        plusRect = NSRect(x: bounds.width - 42, y: 16, width: 28, height: 28)
-        emptyPillRect = NSRect(x: leadingInset, y: 14, width: 184, height: 30)
+        let size = Self.toolbarButtonSize
+        plusRect = NSRect(x: bounds.width - 12 - size, y: Self.toolbarCenterY - size / 2, width: size, height: size)
+        sftpRect = sftpState == .hidden ? .zero : plusRect.offsetBy(dx: -(size + 4), dy: 0)
+        let tabY = Self.toolbarCenterY - Self.tabHeight / 2
+        emptyPillRect = NSRect(x: leadingInset, y: tabY, width: 184, height: Self.tabHeight)
 
         guard !items.isEmpty else { return }
         let left = leadingInset
-        let right = plusRect.minX - 12
+        let right = (sftpState == .hidden ? plusRect.minX : sftpRect.minX) - 12
         let available = max(0, right - left)
         guard available > 20 else { return }
 
@@ -137,8 +159,8 @@ final class SessionTabsView: NSView {
             total = CGFloat(items.count) * width + CGFloat(items.count - 1) * gap
         }
         var x = left
-        let y: CGFloat = 14
-        let height: CGFloat = 30
+        let y = tabY
+        let height = Self.tabHeight
         for index in items.indices {
             let rect = NSRect(x: x, y: y, width: widths[index], height: height)
             tabRects.append(rect)
@@ -164,7 +186,36 @@ final class SessionTabsView: NSView {
                 drawTab(index: index, item: item)
             }
         }
+        drawSFTPButton()
         drawPlusButton()
+    }
+
+    private func drawSFTPButton() {
+        guard sftpState != .hidden else { return }
+        let circle = NSBezierPath(ovalIn: sftpRect.insetBy(dx: 1, dy: 1))
+        let active = sftpState == .active
+        if active {
+            theme.selectedPillFill.setFill()
+            circle.fill()
+            theme.selectedPillBorder.setStroke()
+            circle.lineWidth = 1
+            circle.stroke()
+        } else if hoveredSFTP {
+            theme.pillHoverFill.setFill()
+            circle.fill()
+            theme.pillBorder.setStroke()
+            circle.lineWidth = 1
+            circle.stroke()
+        }
+        let color = active ? theme.accent : (hoveredSFTP ? theme.tabText : theme.tabInactiveText)
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            .applying(.init(paletteColors: [color]))
+        guard let image = NSImage(systemSymbolName: "folder", accessibilityDescription: "SFTP 文件")?
+            .withSymbolConfiguration(config) else { return }
+        let size = image.size
+        image.draw(in: NSRect(x: sftpRect.midX - size.width / 2, y: sftpRect.midY - size.height / 2,
+                              width: size.width, height: size.height),
+                   from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
 
     private func drawTab(index: Int, item: SessionTabItem) {
@@ -257,13 +308,13 @@ final class SessionTabsView: NSView {
         let color = hoveredPlus ? theme.tabText : theme.tabInactiveText
         color.setStroke()
         let cross = NSBezierPath()
-        cross.lineWidth = 1.4
+        cross.lineWidth = 1.5
         cross.lineCapStyle = .round
         let center = NSPoint(x: plusRect.midX, y: plusRect.midY)
-        cross.move(to: NSPoint(x: center.x - 5, y: center.y))
-        cross.line(to: NSPoint(x: center.x + 5, y: center.y))
-        cross.move(to: NSPoint(x: center.x, y: center.y - 5))
-        cross.line(to: NSPoint(x: center.x, y: center.y + 5))
+        cross.move(to: NSPoint(x: center.x - 6.5, y: center.y))
+        cross.line(to: NSPoint(x: center.x + 6.5, y: center.y))
+        cross.move(to: NSPoint(x: center.x, y: center.y - 6.5))
+        cross.line(to: NSPoint(x: center.x, y: center.y + 6.5))
         cross.stroke()
     }
 
@@ -319,8 +370,10 @@ final class SessionTabsView: NSView {
         let oldClose = hoveredClose
         let oldPlus = hoveredPlus
         let oldEmpty = hoveredEmptyPill
+        let oldSFTP = hoveredSFTP
 
         hoveredPlus = plusRect.contains(point)
+        hoveredSFTP = sftpState != .hidden && sftpRect.contains(point)
         hoveredEmptyPill = items.isEmpty && emptyPillRect.contains(point)
         hoveredIndex = nil
         hoveredClose = false
@@ -335,15 +388,18 @@ final class SessionTabsView: NSView {
         }
         if hoveredPlus {
             toolTip = "新建本地终端（⌥⌘T）"
+        } else if hoveredSFTP {
+            toolTip = sftpState == .active ? "隐藏 SFTP 文件（⇧⌘B）" : "显示 SFTP 文件（⇧⌘B）"
         } else if hoveredEmptyPill {
             toolTip = "快速连接"
         } else {
             toolTip = nil
         }
-        (hoveredIndex != nil || hoveredPlus || hoveredEmptyPill
+        (hoveredIndex != nil || hoveredPlus || hoveredSFTP || hoveredEmptyPill
             ? NSCursor.pointingHand
             : NSCursor.arrow).set()
-        if oldHovered != hoveredIndex || oldClose != hoveredClose || oldPlus != hoveredPlus || oldEmpty != hoveredEmptyPill {
+        if oldHovered != hoveredIndex || oldClose != hoveredClose || oldPlus != hoveredPlus
+            || oldEmpty != hoveredEmptyPill || oldSFTP != hoveredSFTP {
             needsDisplay = true
         }
     }
@@ -352,6 +408,7 @@ final class SessionTabsView: NSView {
         hoveredIndex = nil
         hoveredClose = false
         hoveredPlus = false
+        hoveredSFTP = false
         hoveredEmptyPill = false
         toolTip = nil
         NSCursor.arrow.set()
@@ -364,6 +421,10 @@ final class SessionTabsView: NSView {
 
         if plusRect.contains(point) {
             delegate?.tabsViewDidRequestNewTab(self)
+            return
+        }
+        if sftpState != .hidden, sftpRect.contains(point) {
+            delegate?.tabsViewDidToggleSFTP(self)
             return
         }
         if items.isEmpty, emptyPillRect.contains(point) {
