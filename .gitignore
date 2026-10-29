@@ -5,3 +5,4 @@
 .proto/
 .DS_Store
 *.xcuserstate
+dist/
