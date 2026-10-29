@@ -59,7 +59,22 @@ else
     echo "warning: no OneDrive client ID; cloud sync will be unavailable in this build" >&2
 fi
 
-echo "==> Signing (ad-hoc)"
-codesign --force --sign - --timestamp=none "${APP}" >/dev/null 2>&1 || true
+# Sign with a stable identity when there is one: an ad-hoc signature changes
+# with every build, and the keychain then asks again before cTerm can read the
+# key that encrypts saved credentials. Set CTERM_SIGN_IDENTITY, or create the
+# local certificate once with scripts/make_signing_cert.sh.
+IDENTITY="${CTERM_SIGN_IDENTITY:-}"
+if [[ -z "${IDENTITY}" ]] && security find-certificate -c "cTerm Local Signing" >/dev/null 2>&1; then
+    IDENTITY="cTerm Local Signing"
+fi
+if [[ -n "${IDENTITY}" ]]; then
+    echo "==> Signing (${IDENTITY})"
+    codesign --force --sign "${IDENTITY}" --timestamp=none "${APP}"
+else
+    echo "==> Signing (ad-hoc)"
+    echo "warning: no signing certificate; the keychain will ask again after each build." >&2
+    echo "         Run scripts/make_signing_cert.sh once to sign with a stable identity." >&2
+    codesign --force --sign - --timestamp=none "${APP}" >/dev/null 2>&1 || true
+fi
 
 echo "==> Done: ${APP}"
