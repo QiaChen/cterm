@@ -4,8 +4,6 @@ import AppKit
 /// model) and how much terminal output goes with each question.
 @MainActor
 final class AISettingsView: NSView {
-    weak var presenter: NSViewController?
-
     private var theme: TerminalTheme
     private let titleLabel: NSTextField
     private let statusLabel: NSTextField
@@ -171,11 +169,11 @@ final class AISettingsView: NSView {
         statusLabel.textColor = AISettings.isConfigured ? theme.palette[2] : theme.subtle
         let key = AISettings.apiKey
         if let key {
-            keyStateLabel.stringValue = "已保存：\(Self.masked(key))，用主密码加密保存在本机"
+            keyStateLabel.stringValue = "已保存：\(Self.masked(key))，加密保存在本机"
         } else if preset?.needsKey == false {
             keyStateLabel.stringValue = "本机服务一般不需要 API Key，可以留空。"
         } else {
-            keyStateLabel.stringValue = "在服务商控制台创建 API Key，保存后用主密码加密存放在本机。"
+            keyStateLabel.stringValue = "在服务商控制台创建 API Key，保存后加密存放在本机。"
         }
         removeKeyButton.isHidden = key == nil
         let lines = AISettings.contextLines
@@ -210,19 +208,12 @@ final class AISettingsView: NSView {
     @objc private func saveKey(_ sender: Any?) {
         let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
-        Task {
-            if let presenter {
-                guard await MasterPasswordGate.ensureReady(
-                    from: presenter, theme: theme, reason: "API Key 会用主密码加密保存，请先设置主密码。"
-                ) else { return }
-            }
-            if AISettings.setAPIKey(key) {
-                keyField.stringValue = ""
-                testLabel.stringValue = ""
-            } else {
-                testLabel.stringValue = "保存失败：凭据尚未解锁。"
-                testLabel.textColor = theme.palette[1]
-            }
+        if AISettings.setAPIKey(key) {
+            keyField.stringValue = ""
+            testLabel.stringValue = ""
+        } else {
+            testLabel.stringValue = "保存失败：无法写入本机凭据。"
+            testLabel.textColor = theme.palette[1]
         }
     }
 

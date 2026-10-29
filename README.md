@@ -34,7 +34,7 @@ Bracketed Paste 和窗口缩放（缩放时长行会重新折行，不会被截�
 - **原生 SSH 传输**：基于 SwiftNIO SSH/Citadel，支持密码和 OpenSSH 私钥认证。
 - **密钥支持**：Ed25519 与 RSA 的 OpenSSH 私钥；加密私钥会在本机通过系统
   `ssh-keygen` 解锁，解锁后的临时文件权限为 `0600` 并立即删除。
-- **主密码**：第一次保存主机、开启云同步或记住密码时创建主密码，之后每次启动输入一次（快速连接不保存任何凭据）。记住的密码/私钥口令、私钥副本、同步密码和 OneDrive 授权都保存在 `credentials.json` 中，用主密码加密（PBKDF2-SHA256 60 万轮 + AES-256-GCM）；主密码与同步密码相互独立。忘记主密码只能清除本机凭据，可通过云同步恢复。
+- **凭据加密**：记住的密码/私钥口令、私钥副本、同步密码和 OneDrive 授权都保存在 `credentials.json` 中，用 AES-256-GCM 加密；密钥是随机生成的 256 位密钥，保存在 macOS 登录钥匙串（仅本机、Mac 解锁时可读），启动时无需输入任何密码。
 - **加密云同步**：主机配置、记住的密码/口令以及私钥文件内容，用同步密码在本机加密（PBKDF2-SHA256 + AES-256-GCM）后同步到 OneDrive 的应用文件夹（`应用/cTerm`），云端只有密文。私钥副本只保存在 cTerm 自己的凭据文件中，不会写入 `~/.ssh`。
 - **主机指纹校验**：首次连接采用 TOFU，显示 `SHA256:` 指纹；主机密钥变化时给出
   高风险警告并要求显式确认。指纹保存在 `known_hosts.json`。
@@ -48,7 +48,7 @@ Bracketed Paste 和窗口缩放（缩放时长行会重新折行，不会被截�
   而是连同终端最近的输出、当前目录一起发给 AI，回答直接打印在终端里。AI 给出的命令出现在确认行：
   ↩ 执行、⇥ 只输入不执行、↑↓ 在多条命令间切换、Esc 退出；也可以直接继续输入追问，`/new` 开始新对话。
   使用 OpenAI 兼容接口（`/chat/completions`，流式），在“设置 → AI”中选择服务商（OpenAI、DeepSeek、
-  通义千问、Kimi、智谱、硅基流动、本机 Ollama）或自定义 API 地址，并填写模型名称；API Key 用主密码加密保存在本机。
+  通义千问、Kimi、智谱、硅基流动、本机 Ollama）或自定义 API 地址，并填写模型名称；API Key 加密保存在本机。
 - **多标签会话**：圆角标签；当前标签使用填充和细边框，hover 同样为圆角；关闭按钮与
   右侧 `+` 的 hover 为圆形。标签区与终端共享同一背景，没有独立标签栏边界；
   支持连接状态点、关闭/重连和标签页快捷键。
@@ -103,6 +103,14 @@ open dist/cTerm.app
 
 `build.sh` 会优先使用已安装的 Xcode 工具链，并把 SwiftPM/Clang 缓存放在
 `.build/caches`，避免沙箱和权限问题。
+
+签名：凭据密钥保存在钥匙串中，ad-hoc 签名每次构建都会变，钥匙串会在每次构建后重新询问授权。
+在每台 Mac 上运行一次下面的脚本，创建本地自签名证书 `cTerm Local Signing`，之后 `build.sh`
+会自动用它签名；也可以用 `CTERM_SIGN_IDENTITY` 指定其他证书（如 Developer ID）。
+
+```bash
+./scripts/make_signing_cert.sh
+```
 
 开发调试：
 
@@ -183,9 +191,9 @@ swift test
 | --- | --- |
 | 主机档案与分组 | `~/Library/Application Support/cTerm/hosts.json`（权限 `0600`，版本化 JSON） |
 | 已知主机指纹 | `~/Library/Application Support/cTerm/known_hosts.json`（权限 `0600`） |
-| 密码/私钥口令、私钥副本、同步密码、OneDrive 授权 | `~/Library/Application Support/cTerm/credentials.json`（主密码加密，权限 `0600`） |
+| 密码/私钥口令、私钥副本、同步密码、OneDrive 授权 | `~/Library/Application Support/cTerm/credentials.json`（AES-256-GCM 加密，密钥在钥匙串中，权限 `0600`） |
 | 已解锁私钥临时文件 | 私有临时目录 `0700`，文件 `0600`，读取后立即删除 |
-| AI 服务 API Key | 同在 `credentials.json`（主密码加密）；API 地址和模型名称保存在偏好设置中 |
+| AI 服务 API Key | 同在 `credentials.json`（加密）；API 地址和模型名称保存在偏好设置中 |
 | 远程编辑的本地副本 | `~/Library/Caches/cTerm/edit/`（每个文件一个 `0700` 目录，停止编辑后删除；未同步的修改会保留） |
 
 `hosts.json` 不保存密码或口令。删除主机时，会同时删除该主机记住的密码或口令。

@@ -425,7 +425,7 @@ final class SessionViewController: NSViewController {
                 rememberByDefault: profile.rememberSecret
             )
             guard let result else { throw UserCancelledConnection() }
-            if result.remember, await canRemember() {
+            if result.remember {
                 CredentialStore.save(result.value, account: account)
                 profile.rememberSecret = true
                 onRememberSecretChanged?(true)
@@ -477,7 +477,7 @@ final class SessionViewController: NSViewController {
                 )
                 guard let result else { throw UserCancelledConnection() }
                 passphrase = result.value
-                if result.remember, await canRemember() {
+                if result.remember {
                     CredentialStore.save(result.value, account: account)
                     profile.rememberSecret = true
                     onRememberSecretChanged?(true)
@@ -490,14 +490,6 @@ final class SessionViewController: NSViewController {
             }
             throw SSHKeyError.invalidPassphrase
         }
-    }
-
-    /// Remembering needs the master password; the first time, it is created here.
-    private func canRemember() async -> Bool {
-        await MasterPasswordGate.ensureReady(
-            from: self, theme: theme,
-            reason: "记住密码前，请先创建主密码，用来在本机加密保存的密码。"
-        )
     }
 
     private func promptSecret(

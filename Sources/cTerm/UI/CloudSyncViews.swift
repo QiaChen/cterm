@@ -180,10 +180,6 @@ final class CloudSyncSettingsView: NSView {
     /// file, then set the sync password (or enter the existing file's one).
     private func runEnableFlow() async {
         guard let presenter else { return }
-        guard await MasterPasswordGate.ensureReady(
-            from: presenter, theme: theme,
-            reason: "开启云同步前，请先创建主密码，用来在本机加密同步密码与 OneDrive 授权。"
-        ) else { return }
         setBusy(true)
         defer { setBusy(false) }
         do {

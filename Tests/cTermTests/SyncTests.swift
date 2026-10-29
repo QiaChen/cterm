@@ -249,13 +249,15 @@ final class OneDriveClientTests: XCTestCase {
 
 final class CredentialStoreTests: XCTestCase {
     private var url: URL!
+    private var keys: KeyStorage!
 
     override func setUp() {
         url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cterm-cred-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("credentials.json")
+        keys = KeyStorage.inMemory()
+        CredentialStore.keyStorage = keys
         CredentialStore.reset(fileURL: url)
-        try? CredentialStore.setUp(password: "master-pw", iterations: 1_000)
     }
 
     override func tearDown() {
@@ -266,12 +268,10 @@ final class CredentialStoreTests: XCTestCase {
         let account = CredentialStore.account(for: UUID(), kind: "password")
         XCTAssertTrue(CredentialStore.save("s3cret", account: account))
         XCTAssertEqual(CredentialStore.load(account: account), "s3cret")
+        XCTAssertNotNil(try keys.load(), "the key is created with the first write")
 
         // A fresh load from disk sees the same value; the file is private.
         CredentialStore.reset(fileURL: url)
-        XCTAssertEqual(CredentialStore.state, .locked)
-        XCTAssertNil(CredentialStore.load(account: account), "nothing is readable while locked")
-        try CredentialStore.unlock(password: "master-pw", minimumIterations: 1_000)
         XCTAssertEqual(CredentialStore.load(account: account), "s3cret")
         let perms = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
         XCTAssertEqual(perms, 0o600)
@@ -294,47 +294,49 @@ final class CredentialStoreTests: XCTestCase {
         let raw = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(raw.contains("very-secret-value"))
         XCTAssertFalse(raw.contains("a.password"), "account names are encrypted too")
-        XCTAssertTrue(SyncCrypto.isEnvelope(Data(raw.utf8), format: CredentialStore.fileFormat))
+        XCTAssertTrue(raw.contains(CredentialStore.fileFormat))
     }
 
-    func testWrongMasterPasswordIsRejected() {
+    func testFileWithoutItsKeyIsMovedAside() throws {
         CredentialStore.save("x", account: "a.password")
+        CredentialStore.keyStorage = KeyStorage.inMemory()
         CredentialStore.reset(fileURL: url)
-        XCTAssertThrowsError(try CredentialStore.unlock(password: "nope", minimumIterations: 1_000))
-        XCTAssertEqual(CredentialStore.state, .locked)
+        XCTAssertNil(CredentialStore.load(account: "a.password"))
+        let aside = url.deletingLastPathComponent().appendingPathComponent("credentials-unreadable.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: aside.path))
+        XCTAssertTrue(CredentialStore.save("y", account: "b.password"), "the store starts over")
     }
 
-    func testLockedStoreRefusesWrites() {
+    func testMasterPasswordFileIsMovedAside() throws {
+        // Written by a build that sealed the file with a master password.
+        let old = try SyncCrypto.encrypt(Data("{}".utf8), password: "master-pw", iterations: 1_000)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try old.write(to: url)
+        XCTAssertNil(CredentialStore.load(account: "a.password"))
+        XCTAssertTrue(CredentialStore.save("y", account: "b.password"))
         CredentialStore.reset(fileURL: url)
-        XCTAssertFalse(CredentialStore.saveItem("x", account: "y", service: CredentialStore.syncService))
+        XCTAssertEqual(CredentialStore.load(account: "b.password"), "y")
     }
 
-    func testChangeMasterPassword() throws {
+    func testRefusedKeyKeepsFileAndRefusesWrites() throws {
         CredentialStore.save("kept", account: "a.password")
-        XCTAssertThrowsError(try CredentialStore.changePassword(current: "wrong", to: "new-pw", iterations: 1_000))
-        try CredentialStore.changePassword(current: "master-pw", to: "new-pw", iterations: 1_000)
+        struct Denied: Error {}
+        CredentialStore.keyStorage = KeyStorage(load: { throw Denied() }, save: { _ in throw Denied() })
         CredentialStore.reset(fileURL: url)
-        XCTAssertThrowsError(try CredentialStore.unlock(password: "master-pw", minimumIterations: 1_000))
-        try CredentialStore.unlock(password: "new-pw", minimumIterations: 1_000)
+        XCTAssertNil(CredentialStore.load(account: "a.password"))
+        XCTAssertFalse(CredentialStore.saveItem("x", account: "y", service: CredentialStore.syncService))
+        CredentialStore.keyStorage = keys
+        CredentialStore.reset(fileURL: url)
         XCTAssertEqual(CredentialStore.load(account: "a.password"), "kept")
     }
 
-    func testSetUpEncryptsCredentialsFromOlderBuild() throws {
-        // Before master passwords the file was plain JSON.
-        CredentialStore.resetAll()
+    func testEncryptsCredentialsFromOlderBuild() throws {
+        // An early build wrote plain JSON.
         let plain = #"{"version":1,"items":{"credentials/a.password":"legacy"},"times":{}}"#
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try plain.write(to: url, atomically: true, encoding: .utf8)
-        XCTAssertEqual(CredentialStore.state, .needsSetup)
-        try CredentialStore.setUp(password: "pw2", iterations: 1_000)
         XCTAssertEqual(CredentialStore.load(account: "a.password"), "legacy")
         XCTAssertFalse(try String(contentsOf: url, encoding: .utf8).contains("legacy"))
-    }
-
-    func testResetForgetsEverything() {
-        CredentialStore.save("gone", account: "a.password")
-        CredentialStore.resetAll()
-        XCTAssertEqual(CredentialStore.state, .needsSetup)
-        XCTAssertNil(CredentialStore.load(account: "a.password"))
     }
 
     func testServicesAreSeparate() {
@@ -351,8 +353,8 @@ final class PrivateKeyVaultTests: XCTestCase {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("cterm-vault-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        CredentialStore.keyStorage = KeyStorage.inMemory()
         CredentialStore.reset(fileURL: directory.appendingPathComponent("credentials.json"))
-        try? CredentialStore.setUp(password: "master-pw", iterations: 1_000)
     }
 
     override func tearDown() {

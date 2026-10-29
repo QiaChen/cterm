@@ -471,13 +471,7 @@ final class HostEditorViewController: NSViewController {
             onSave?(profile, false)
             return
         }
-        Task { @MainActor in
-            guard await MasterPasswordGate.ensureReady(
-                from: self, theme: theme,
-                reason: "保存主机前，请先创建主密码，用来加密这台主机的密码与私钥。"
-            ) else { return }
-            onSave?(profile, true)
-        }
+        onSave?(profile, true)
     }
 
     /// The key file, or, on a Mac without it, the copy that came through sync

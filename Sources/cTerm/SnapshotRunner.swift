@@ -342,12 +342,6 @@ enum SnapshotRunner {
         renderSettings(theme: theme, directory: directory, name: "settings-sync-on-\(suffix).png", tab: .sync)
         manager.preview = nil
 
-        renderSheet(MasterPasswordViewController(
-                        mode: .create, theme: theme,
-                        reason: "保存主机前，请先创建主密码，用来加密这台主机的密码与私钥。", inSheet: true),
-                    theme: theme, to: directory.appendingPathComponent("master-create-\(suffix).png"))
-        renderSheet(MasterPasswordViewController(mode: .unlock, theme: theme), theme: theme,
-                    to: directory.appendingPathComponent("master-unlock-\(suffix).png"))
         renderSheet(SyncPasswordViewController(mode: .create, theme: theme), theme: theme,
                     to: directory.appendingPathComponent("sync-password-\(suffix).png"))
 

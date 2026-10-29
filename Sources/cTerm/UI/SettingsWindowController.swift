@@ -172,9 +172,7 @@ private final class SettingsViewController: NSViewController {
         syncSection.presenter = self
         let storageButton = UIFactory.button("打开配置文件夹", target: self, action: #selector(openSupportFolder))
         storageButton.controlSize = .regular
-        let masterButton = UIFactory.button("修改主密码…", target: self, action: #selector(changeMasterPassword))
-        masterButton.controlSize = .regular
-        let storageRow = NSStackView(views: [dataLabel, NSView(), masterButton, storageButton])
+        let storageRow = NSStackView(views: [dataLabel, NSView(), storageButton])
         storageRow.spacing = 8
         storageRow.orientation = .horizontal
         storageRow.alignment = .centerY
@@ -183,7 +181,7 @@ private final class SettingsViewController: NSViewController {
         pathLabel.toolTip = AppPaths.supportDirectory.path
 
         let security = UIFactory.wrappingLabel(
-            "记住的密码、私钥口令和私钥副本保存在配置文件夹的 credentials.json 中，用主密码加密（PBKDF2-SHA256 + AES-256-GCM）。主机密钥采用首次使用信任（TOFU）并记录在本地 known_hosts.json。",
+            "记住的密码、私钥口令和私钥副本保存在配置文件夹的 credentials.json 中，用 AES-256-GCM 加密，密钥保存在 macOS 钥匙串中。主机密钥采用首次使用信任（TOFU）并记录在本地 known_hosts.json。",
             size: 11,
             color: theme.subtle
         )
@@ -204,7 +202,6 @@ private final class SettingsViewController: NSViewController {
         tabBar.onSelect = { [weak self] tab in self?.select(tab) }
         root.addSubview(tabBar)
         pages = [.general: stack, .sync: syncSection, .ai: aiSection]
-        aiSection.presenter = self
 
         NSLayoutConstraint.activate([
             titleStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
@@ -262,19 +259,6 @@ private final class SettingsViewController: NSViewController {
         let value = CGFloat(Int(fontSlider.doubleValue.rounded()))
         fontValueLabel.stringValue = "\(Int(value)) pt"
         AppearancePreferences.fontSize = value
-    }
-
-    @objc private func changeMasterPassword() {
-        let controller = MasterPasswordViewController(mode: .change, theme: theme)
-        controller.onDone = { [weak self, weak controller] in
-            guard let controller else { return }
-            self?.dismiss(controller)
-        }
-        controller.onCancel = { [weak self, weak controller] in
-            guard let controller else { return }
-            self?.dismiss(controller)
-        }
-        presentAsSheet(controller)
     }
 
     @objc private func openSupportFolder() {

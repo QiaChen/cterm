@@ -38,7 +38,7 @@ enum SyncCrypto {
     }
 
     /// The salt and work factor a key is derived with; kept so a key derived
-    /// once (the local master key) can seal many writes.
+    /// once can seal many writes.
     struct KeyParameters: Equatable {
         var salt: Data
         var iterations: Int

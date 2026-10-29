@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 extension Notification.Name {
     /// Posted when a host credential is saved or removed; the object is the account.
@@ -10,17 +11,18 @@ extension Notification.Name {
 /// and the OneDrive refresh token, in `credentials.json` in the app's support
 /// folder.
 ///
-/// The file is encrypted with a key derived from the user's master password
-/// (PBKDF2-HMAC-SHA256, 600 000 rounds, then AES-256-GCM, the same scheme as
-/// the cloud file). The password is asked for at launch; the derived key lives
-/// only in memory, and nothing can be read or saved while the store is locked.
-/// The file is also 0600 in a 0700 folder.
+/// The file is sealed with AES-256-GCM under a random 256-bit key kept in the
+/// login keychain (this Mac only, readable while the Mac is unlocked), so
+/// nothing has to be typed at launch. The key is created with the first write
+/// and the file is loaded on first use. The file is also 0600 in a 0700 folder.
 enum CredentialStore {
     static let credentialService = "credentials"
     static let syncService = "sync"
 
     /// Replaced by tests.
     static var fileURL = AppPaths.supportDirectory.appendingPathComponent("credentials.json")
+    /// Where the file key lives; replaced by tests.
+    static var keyStorage = KeyStorage.keychain
 
     private struct Payload: Codable {
         var version = 1
@@ -33,36 +35,21 @@ enum CredentialStore {
         var imports: [String: String]?
     }
 
-    static let fileFormat = "cterm-local"
-
-    enum State: Equatable {
-        /// No master password yet: first launch, or after a reset. A file
-        /// written by a build before master passwords is kept and encrypted
-        /// on setup.
-        case needsSetup
-        case locked
-        case unlocked
+    private struct Envelope: Codable {
+        var format: String
+        var version: Int
+        /// AES-GCM nonce, ciphertext and tag, base64.
+        var sealed: String
     }
 
-    enum StoreError: LocalizedError {
-        case wrongPassword
-        case notUnlocked
-        case unreadable
-        case writeFailed
-
-        var errorDescription: String? {
-            switch self {
-            case .wrongPassword: return "主密码不正确。"
-            case .notUnlocked: return "凭据尚未解锁。"
-            case .unreadable: return "凭据文件已损坏，无法读取。"
-            case .writeFailed: return "无法写入凭据文件。"
-            }
-        }
-    }
+    static let fileFormat = "cterm-keychain"
+    private static let fileVersion = 1
 
     private static var payload: Payload?
-    private static var masterKey: SymmetricKey?
-    private static var keyParameters: SyncCrypto.KeyParameters?
+    private static var fileKey: SymmetricKey?
+    /// Set when the keychain refused the key (access denied); not retried
+    /// until the next launch, so the user is not asked over and over.
+    private static var keyUnavailable = false
     private static let lock = NSRecursiveLock()
 
     static func account(for profileID: UUID, kind: String) -> String {
@@ -155,6 +142,7 @@ enum CredentialStore {
     private static func withPayload<T>(_ body: (Payload) -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
+        loadIfNeeded()
         return body(payload ?? Payload())
     }
 
@@ -162,111 +150,102 @@ enum CredentialStore {
     private static func mutate(_ body: (inout Payload) -> Void) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard var value = payload, let masterKey, let keyParameters else {
-            NSLog("cTerm: credentials are locked; change not saved")
+        guard loadIfNeeded(), var value = payload else {
+            NSLog("cTerm: credentials are unavailable; change not saved")
             return false
         }
         body(&value)
-        guard write(value, key: masterKey, parameters: keyParameters) else { return false }
+        guard write(value) else { return false }
         payload = value
         return true
     }
 
-    // MARK: - Master password
-
-    static var state: State {
-        lock.lock()
-        defer { lock.unlock() }
-        if masterKey != nil { return .unlocked }
-        guard let data = try? Data(contentsOf: fileURL), !data.isEmpty else { return .needsSetup }
-        return SyncCrypto.isEnvelope(data, format: fileFormat) ? .locked : .needsSetup
-    }
-
-    /// Credentials an older build saved without encryption, which must be
-    /// encrypted (by creating a master password) before cTerm goes on.
-    static var hasUnencryptedCredentials: Bool {
-        guard let data = try? Data(contentsOf: fileURL), !SyncCrypto.isEnvelope(data, format: fileFormat),
-              let plain = try? JSONDecoder().decode(Payload.self, from: data) else { return false }
-        return !plain.items.isEmpty
-    }
-
-    /// Creates the master password. Credentials left unencrypted by an older
-    /// build are kept and encrypted with it. Slow (key derivation): call it
-    /// off the main thread.
-    static func setUp(password: String, iterations: Int = SyncCrypto.defaultIterations) throws {
-        let parameters = SyncCrypto.KeyParameters.fresh(iterations: iterations)
-        let newKey = try SyncCrypto.deriveKey(password: password, salt: parameters.salt, iterations: iterations)
-        lock.lock()
-        defer { lock.unlock() }
-        var existing = Payload()
-        if let data = try? Data(contentsOf: fileURL), !SyncCrypto.isEnvelope(data, format: fileFormat),
-           let plain = try? JSONDecoder().decode(Payload.self, from: data) {
-            existing = plain
+    /// Reads the file the first time it is needed. A file this Mac cannot
+    /// open (sealed with a master password by an older build, or its key
+    /// gone from the keychain) is moved aside and the store starts empty.
+    @discardableResult
+    private static func loadIfNeeded() -> Bool {
+        if payload != nil { return true }
+        if keyUnavailable { return false }
+        guard let data = try? Data(contentsOf: fileURL), !data.isEmpty else {
+            payload = Payload()
+            return true
         }
-        guard write(existing, key: newKey, parameters: parameters) else { throw StoreError.writeFailed }
-        payload = existing
-        masterKey = newKey
-        keyParameters = parameters
-    }
-
-    /// Opens the store. Slow (key derivation): call it off the main thread.
-    static func unlock(password: String, minimumIterations: Int = SyncCrypto.minimumIterations) throws {
-        guard let data = try? Data(contentsOf: fileURL) else { throw StoreError.unreadable }
-        let parameters: SyncCrypto.KeyParameters
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
+              envelope.format == fileFormat else {
+            // An early build wrote plain JSON: keep it and encrypt it now.
+            if let plain = try? JSONDecoder().decode(Payload.self, from: data) {
+                payload = plain
+                _ = write(plain)
+            } else {
+                discardUnreadableFile()
+            }
+            return true
+        }
+        let key: SymmetricKey
         do {
-            parameters = try SyncCrypto.keyParameters(of: data, format: fileFormat, minimumIterations: minimumIterations)
+            guard let stored = try keyStorage.load() else {
+                discardUnreadableFile()
+                return true
+            }
+            key = SymmetricKey(data: stored)
         } catch {
-            throw StoreError.unreadable
+            NSLog("cTerm: could not read the credentials key: \(error)")
+            keyUnavailable = true
+            return false
         }
-        let derived = try SyncCrypto.deriveKey(password: password, salt: parameters.salt, iterations: parameters.iterations)
-        let plaintext: Data
-        do {
-            plaintext = try SyncCrypto.open(data, key: derived, format: fileFormat, minimumIterations: minimumIterations)
-        } catch {
-            throw StoreError.wrongPassword
+        guard let plaintext = try? open(envelope, key: key),
+              let value = try? JSONDecoder().decode(Payload.self, from: plaintext) else {
+            discardUnreadableFile()
+            return true
         }
-        guard let value = try? JSONDecoder().decode(Payload.self, from: plaintext) else { throw StoreError.unreadable }
-        lock.lock()
-        defer { lock.unlock() }
+        fileKey = key
         payload = value
-        masterKey = derived
-        keyParameters = parameters
+        return true
     }
 
-    /// Re-encrypts the store under a new master password. Slow: off the main thread.
-    static func changePassword(current: String, to newPassword: String,
-                               iterations: Int = SyncCrypto.defaultIterations) throws {
-        lock.lock()
-        guard let parameters = keyParameters, let activeKey = masterKey, let value = payload else {
-            lock.unlock()
-            throw StoreError.notUnlocked
+    private static func discardUnreadableFile() {
+        let aside = fileURL.deletingLastPathComponent().appendingPathComponent("credentials-unreadable.json")
+        try? FileManager.default.removeItem(at: aside)
+        try? FileManager.default.moveItem(at: fileURL, to: aside)
+        NSLog("cTerm: credentials file could not be opened; moved to \(aside.path)")
+        payload = Payload()
+    }
+
+    /// The key to seal with: the one loaded, else the keychain's, else a new one.
+    private static func sealingKey() -> SymmetricKey? {
+        if let fileKey { return fileKey }
+        do {
+            let key: SymmetricKey
+            if let stored = try keyStorage.load() {
+                key = SymmetricKey(data: stored)
+            } else {
+                key = SymmetricKey(size: .bits256)
+                try keyStorage.save(key.withUnsafeBytes { Data($0) })
+            }
+            fileKey = key
+            return key
+        } catch {
+            NSLog("cTerm: could not store the credentials key: \(error)")
+            return nil
         }
-        lock.unlock()
-        let check = try SyncCrypto.deriveKey(password: current, salt: parameters.salt, iterations: parameters.iterations)
-        guard check == activeKey else { throw StoreError.wrongPassword }
-        let newParameters = SyncCrypto.KeyParameters.fresh(iterations: iterations)
-        let newKey = try SyncCrypto.deriveKey(password: newPassword, salt: newParameters.salt, iterations: iterations)
-        lock.lock()
-        defer { lock.unlock() }
-        guard write(payload ?? value, key: newKey, parameters: newParameters) else { throw StoreError.writeFailed }
-        masterKey = newKey
-        keyParameters = newParameters
-    }
-
-    /// For a forgotten master password: deletes every saved credential so a
-    /// new master password can be created. Hosts are not touched.
-    static func resetAll() {
-        lock.lock()
-        defer { lock.unlock() }
-        try? FileManager.default.removeItem(at: fileURL)
-        payload = nil
-        masterKey = nil
-        keyParameters = nil
     }
 
     // MARK: - File
 
-    private static func write(_ value: Payload, key: SymmetricKey, parameters: SyncCrypto.KeyParameters) -> Bool {
+    private static func aad() -> Data {
+        Data("\(fileFormat)|v\(fileVersion)|AES-256-GCM".utf8)
+    }
+
+    private static func open(_ envelope: Envelope, key: SymmetricKey) throws -> Data {
+        guard envelope.version <= fileVersion, let combined = Data(base64Encoded: envelope.sealed) else {
+            throw SyncError.unsupportedParameters
+        }
+        return try AES.GCM.open(AES.GCM.SealedBox(combined: combined), using: key, authenticating: aad())
+    }
+
+    private static func write(_ value: Payload) -> Bool {
+        guard let key = sealingKey() else { return false }
         do {
             let directory = fileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(
@@ -274,8 +253,12 @@ enum CredentialStore {
                 attributes: [.posixPermissions: 0o700]
             )
             let plaintext = try JSONEncoder().encode(value)
-            let data = try SyncCrypto.seal(plaintext, key: key, parameters: parameters, format: fileFormat)
-            try data.write(to: fileURL, options: .atomic)
+            let sealed = try AES.GCM.seal(plaintext, using: key, authenticating: aad())
+            let envelope = Envelope(format: fileFormat, version: fileVersion,
+                                    sealed: sealed.combined!.base64EncodedString())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(envelope).write(to: fileURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
             return true
         } catch {
@@ -291,8 +274,58 @@ enum CredentialStore {
         defer { lock.unlock() }
         fileURL = url
         payload = nil
-        masterKey = nil
-        keyParameters = nil
+        fileKey = nil
+        keyUnavailable = false
+    }
+    #endif
+}
+
+/// Loads and saves the 32-byte key that seals `credentials.json`.
+struct KeyStorage {
+    var load: () throws -> Data?
+    var save: (Data) throws -> Void
+
+    struct KeychainError: LocalizedError {
+        var status: OSStatus
+        var errorDescription: String? {
+            (SecCopyErrorMessageString(status, nil) as String?) ?? "Keychain error \(status)"
+        }
+    }
+
+    private static let query: [CFString: Any] = [
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: "me.cqq.cterm",
+        kSecAttrAccount: "credentials-key"
+    ]
+
+    static let keychain = KeyStorage(
+        load: {
+            var lookup = query
+            lookup[kSecReturnData] = true
+            lookup[kSecMatchLimit] = kSecMatchLimitOne
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+            if status == errSecItemNotFound { return nil }
+            guard status == errSecSuccess, let data = result as? Data else { throw KeychainError(status: status) }
+            return data
+        },
+        save: { data in
+            SecItemDelete(query as CFDictionary)
+            var item = query
+            item[kSecValueData] = data
+            item[kSecAttrLabel] = "cTerm 凭据密钥"
+            item[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            let status = SecItemAdd(item as CFDictionary, nil)
+            guard status == errSecSuccess else { throw KeychainError(status: status) }
+        }
+    )
+
+    #if DEBUG
+    /// A key kept in memory, for tests.
+    static func inMemory() -> KeyStorage {
+        final class Box: @unchecked Sendable { var data: Data? }
+        let box = Box()
+        return KeyStorage(load: { box.data }, save: { box.data = $0 })
     }
     #endif
 }

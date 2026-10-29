@@ -14,7 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let knownHosts = KnownHostsStore()
     private var mainWindowController: MainWindowController?
     private var settingsWindowController: SettingsWindowController?
-    private var unlockWindowController: UnlockWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.migrateDefaultsFromOldBundleID()
@@ -24,37 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 self?.settingsWindowController?.showTab(.ai)
             }
         }
-        // The menu exists from the start so ⌘Q works in the unlock window; it
-        // is rebuilt once the main window exists to target it.
-        buildMenu()
-        // Saved credentials are encrypted with the master password. Without
-        // one yet, cTerm starts straight away and asks when something is first
-        // saved. With one, nothing that reads credentials (sessions, cloud
-        // sync) starts before it is entered.
-        let state = CredentialStore.state
-        guard state == .locked || CredentialStore.hasUnencryptedCredentials else {
-            finishLaunching()
-            return
-        }
-        let unlock = UnlockWindowController(theme: AppearancePreferences.theme) { [weak self] in
-            self?.finishLaunching()
-        }
-        unlockWindowController = unlock
-        unlock.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @MainActor
-    private func finishLaunching() {
         let controller = MainWindowController(hostStore: hostStore, knownHosts: knownHosts)
         mainWindowController = controller
         CloudSyncManager.shared.start(hostStore: hostStore)
         buildMenu()
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async { [weak self] in
-            self?.unlockWindowController = nil
-        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
