@@ -83,6 +83,7 @@ final class SSHConnection {
                     reconnect: .never,
                     protocolOptions: [],
                     group: SSHConnection.eventLoopGroup,
+                    channelHandlers: [TCPKeepAliveHandler()],
                     connectTimeout: .seconds(20)
                 )
 
@@ -268,6 +269,31 @@ final class SSHConnection {
         writer = nil
         state = .disconnected
         onEnd?(message)
+    }
+}
+
+/// Turns on TCP keepalive before the socket connects. An idle session then
+/// still sends a probe every so often, which keeps NAT and firewall entries
+/// from expiring; when the probes go unanswered (network gone, Mac woke up
+/// on another network) the socket fails and the session ends instead of
+/// looking connected while nothing gets through.
+final class TCPKeepAliveHandler: ChannelInboundHandler {
+    typealias InboundIn = Any
+
+    /// Seconds of silence before the first probe.
+    static let idle: Int32 = 30
+    /// Seconds between unanswered probes.
+    static let interval: Int32 = 15
+    /// Unanswered probes before the connection is dropped (about a minute).
+    static let count: Int32 = 4
+
+    func handlerAdded(context: ChannelHandlerContext) {
+        let channel = context.channel
+        let tcp = SocketOptionLevel(IPPROTO_TCP)
+        _ = channel.setOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
+        _ = channel.setOption(ChannelOptions.socket(tcp, TCP_KEEPALIVE), value: Self.idle)
+        _ = channel.setOption(ChannelOptions.socket(tcp, TCP_KEEPINTVL), value: Self.interval)
+        _ = channel.setOption(ChannelOptions.socket(tcp, TCP_KEEPCNT), value: Self.count)
     }
 }
 
